@@ -1,33 +1,33 @@
 import math
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use("TkAgg")
+import numpy as np
 
-_DARK = {
-    "fig_bg": "#1e1e2e",
-    "ax_bg": "#181825",
-    "line": "#89b4fa",
-    "zero": "#6c7086",
-    "grid": "#313244",
-    "text": "#cdd6f4",
-    "tick": "#a6adc8",
-    "spine": "#313244",
-}
+matplotlib.use("TkAgg")
 
 
 def _resolve(theme):
     if not theme:
-        return _DARK
+        return {
+            "fig_bg": "#1e1e2e",
+            "ax_bg": "#181825",
+            "line": "#89b4fa",
+            "zero": "#6c7086",
+            "grid": "#313244",
+            "text": "#cdd6f4",
+            "tick": "#a6adc8",
+            "spine": "#313244",
+        }
     return {
-        "fig_bg": theme.get("bg",          _DARK["fig_bg"]),
-        "ax_bg":  theme.get("display_bg",  _DARK["ax_bg"]),
-        "line":   theme.get("btn_op_bg",   _DARK["line"]),
-        "zero":   theme.get("btn_bg",      _DARK["zero"]),
-        "grid":   theme.get("btn_bg",      _DARK["grid"]),
-        "text":   theme.get("fg",          _DARK["text"]),
-        "tick":   theme.get("display_fg",  _DARK["tick"]),
-        "spine":  theme.get("btn_bg",      _DARK["spine"]),
+        "fig_bg": theme.get("bg", "#1e1e2e"),
+        "ax_bg": theme.get("display_bg", "#181825"),
+        "line": theme.get("btn_op_bg", "#89b4fa"),
+        "zero": theme.get("btn_bg", "#6c7086"),
+        "grid": theme.get("btn_bg", "#313244"),
+        "text": theme.get("fg", "#cdd6f4"),
+        "tick": theme.get("display_fg", "#a6adc8"),
+        "spine": theme.get("btn_bg", "#313244"),
     }
 
 
@@ -47,12 +47,23 @@ def _style(fig, ax, theme=None):
 
 def _make_ns(x):
     return {
-        "sin": np.sin, "cos": np.cos, "tan": np.tan,
-        "arcsin": np.arcsin, "arccos": np.arccos, "arctan": np.arctan,
-        "asin": np.arcsin, "acos": np.arccos, "atan": np.arctan,
-        "sqrt": np.sqrt, "log": np.log10, "ln": np.log,
-        "exp": np.exp, "abs": np.abs,
-        "pi": math.pi, "e": math.e, "x": x,
+        "sin": np.sin,
+        "cos": np.cos,
+        "tan": np.tan,
+        "arcsin": np.arcsin,
+        "arccos": np.arccos,
+        "arctan": np.arctan,
+        "asin": np.arcsin,
+        "acos": np.arccos,
+        "atan": np.arctan,
+        "sqrt": np.sqrt,
+        "log": np.log10,
+        "ln": np.log,
+        "exp": np.exp,
+        "abs": np.abs,
+        "pi": math.pi,
+        "e": math.e,
+        "x": x,
     }
 
 
@@ -60,7 +71,7 @@ def create_figure(figsize=(4, 2.8)):
     fig, ax = plt.subplots(figsize=figsize)
     fig.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.15)
     _style(fig, ax)
-    ax.set_title("Graph", color=_DARK["text"], fontsize=9, pad=6)
+    ax.set_title("Graph", color="#cdd6f4", fontsize=9, pad=6)
     return fig, ax
 
 
@@ -92,10 +103,9 @@ def plot_function(expr, x_min=-10, x_max=10):
         y = np.where(np.abs(y) > 1e8, np.nan, y)
     except Exception as err:
         raise ValueError(f"Cannot evaluate expression: {err}")
-
     fig, ax = plt.subplots(figsize=(8, 5))
     _style(fig, ax)
-    ax.plot(x, y, color=_DARK["line"], linewidth=2)
-    ax.set_title(f"f(x) = {expr}", color=_DARK["text"], fontsize=12)
+    ax.plot(x, y, color="#89b4fa", linewidth=2)
+    ax.set_title(f"f(x) = {expr}", color="#cdd6f4", fontsize=12)
     plt.tight_layout()
     plt.show()
