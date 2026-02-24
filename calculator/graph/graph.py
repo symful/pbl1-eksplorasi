@@ -8,26 +8,15 @@ matplotlib.use("TkAgg")
 
 
 def _resolve(theme):
-    if not theme:
-        return {
-            "fig_bg": "#1e1e2e",
-            "ax_bg": "#181825",
-            "line": "#89b4fa",
-            "zero": "#6c7086",
-            "grid": "#313244",
-            "text": "#cdd6f4",
-            "tick": "#a6adc8",
-            "spine": "#313244",
-        }
     return {
-        "fig_bg": theme.get("bg", "#1e1e2e"),
-        "ax_bg": theme.get("display_bg", "#181825"),
-        "line": theme.get("btn_op_bg", "#89b4fa"),
-        "zero": theme.get("btn_bg", "#6c7086"),
-        "grid": theme.get("btn_bg", "#313244"),
-        "text": theme.get("fg", "#cdd6f4"),
-        "tick": theme.get("display_fg", "#a6adc8"),
-        "spine": theme.get("btn_bg", "#313244"),
+        "fig_bg": theme.get("bg"),
+        "ax_bg": theme.get("display_bg"),
+        "line": theme.get("btn_op_bg"),
+        "zero": theme.get("btn_bg"),
+        "grid": theme.get("btn_bg"),
+        "text": theme.get("fg"),
+        "tick": theme.get("display_fg"),
+        "spine": theme.get("btn_bg"),
     }
 
 
