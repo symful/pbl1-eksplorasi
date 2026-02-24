@@ -288,6 +288,28 @@ def main():
     except Exception:
         pass
     app.update_theme(_ui_theme)
+
+    try:
+        ax, canvas = app.get_graph_objects()
+        if ax is not None and canvas is not None:
+            from graph.graph import update_plot
+
+            x_min, x_max = app.get_x_range()
+            try:
+                update_plot(
+                    ax,
+                    canvas,
+                    "0",
+                    int(x_min),
+                    int(x_max),
+                    _get_variables(),
+                    theme=_current_theme_raw,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     app.on_button_press(lambda label: handle_button(label, app))
     app.mainloop()
 
