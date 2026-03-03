@@ -1,0 +1,22 @@
+# ============================================================
+# Economic Calendar Scraper - Requirements
+# ============================================================
+
+# HTTP & Networking
+requests==2.31.0
+urllib3==2.2.1
+
+# HTML Parsing
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
+# Date & Timezone
+python-dateutil==2.9.0
+pytz==2024.1
+
+# Environment & Config
+python-dotenv==1.0.1
+
+# CLI & Display
+colorama==0.4.6
+rich==13.7.1
