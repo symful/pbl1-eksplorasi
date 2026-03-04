@@ -172,19 +172,76 @@ class CalculatorUI(tk.Tk):
         right.grid(row=0, column=1, sticky="ns")
 
         style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Dark.TNotebook", background=_C["bg"], borderwidth=0)
+        style.theme_use("clam")
+
+        style.configure(
+            "Dark.TNotebook",
+            background=_C["bg"],
+            borderwidth=0,
+            tabmargins=[0, 0, 0, 0],
+        )
+
+        # Tab base styling
         style.configure(
             "Dark.TNotebook.Tab",
             background=_C["surface"],
             foreground=_C["subtext"],
             padding=[10, 4],
             font=("Consolas", 9),
+            borderwidth=0,
+            focuscolor=_C["surface2"],
         )
+
+        style.layout(
+            "Dark.TNotebook",
+            [
+                (
+                    "Dark.TNotebook.client",
+                    {"sticky": "nswe"},
+                )
+            ],
+        )
+        style.layout(
+            "Dark.TNotebook.Tab",
+            [
+                (
+                    "Dark.TNotebook.tab",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            (
+                                "Dark.TNotebook.padding",
+                                {
+                                    "side": "top",
+                                    "sticky": "nswe",
+                                    "children": [
+                                        (
+                                            "Dark.TNotebook.label",
+                                            {"side": "top", "sticky": ""},
+                                        )
+                                    ],
+                                },
+                            )
+                        ],
+                    },
+                )
+            ],
+        )
+
         style.map(
             "Dark.TNotebook.Tab",
-            background=[("selected", _C["surface2"])],
-            foreground=[("selected", _C["text"])],
+            background=[
+                ("selected", _C["surface2"]),
+                ("active", _C["surface2"]),
+                ("disabled", _C["surface"]),
+                ("!selected", _C["surface"]),
+            ],
+            foreground=[
+                ("selected", _C["text"]),
+                ("active", _C["text"]),
+                ("disabled", _C["subtext"]),
+                ("!selected", _C["subtext"]),
+            ],
         )
 
         nb = ttk.Notebook(right, style="Dark.TNotebook", width=300)

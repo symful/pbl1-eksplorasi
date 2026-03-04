@@ -8,7 +8,6 @@ matplotlib.use("TkAgg")
 
 
 def _resolve(theme=None):
-    # Allow calls without a theme (e.g. during initial UI construction)
     theme = theme or {}
     return {
         "fig_bg": theme.get("bg", "#11111b"),
