@@ -6,7 +6,7 @@ import sys
 import threading
 import tkinter as tk
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -626,6 +626,75 @@ class PricesTab(ttk.Frame):
         self._build_chart_and_table()
         self._build_json_view()
 
+    # ----------------------------
+    # Guardrails for Yahoo limits
+    # ----------------------------
+    def _normalize_interval_period(
+        self, interval: str, period: str
+    ) -> Tuple[str, str, Optional[str]]:
+        """
+        Yahoo Finance limitations (common):
+        - 1m interval cannot be fetched for long periods (often max ~7-8 days).
+        - Smaller intervals (5m/15m/30m) also have limited lookbacks.
+
+        We enforce a safe combination to avoid "no price data found" / misleading delisted errors.
+
+        Returns: (interval, period, note_to_user)
+        """
+        interval = (interval or "").strip()
+        period = (period or "").strip()
+
+        # Safe defaults
+        if not interval:
+            interval = "1d"
+        if not period:
+            period = "1mo"
+
+        note: Optional[str] = None
+
+        # Hard guard for 1m
+        if interval == "1m" and period not in ("1d", "5d"):
+            note = (
+                "Interval 1m hanya bisa ± sampai 8 hari. Period otomatis di-set ke 5d."
+            )
+            period = "5d"
+
+        # Soft guards for other intraday intervals (keep it simple)
+        if interval in ("5m", "15m", "30m") and period in (
+            "2y",
+            "5y",
+            "10y",
+            "max",
+            "ytd",
+        ):
+            note = f"Interval {interval} tidak cocok untuk period {period}. Period otomatis di-set ke 1mo."
+            period = "1mo"
+
+        # If user chooses 1h, keep period reasonable (still allow large, but reduce worst-cases)
+        if interval == "1h" and period in ("10y", "max"):
+            note = f"Interval {interval} untuk {period} sering gagal di Yahoo. Period otomatis di-set ke 2y."
+            period = "2y"
+
+        return interval, period, note
+
+    def _is_yfinance_rate_limit_error(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            ("too many requests" in msg)
+            or ("rate limit" in msg)
+            or ("ratelimited" in msg)
+        )
+
+    def _is_yahoo_granularity_window_error(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return ("only" in msg and "days worth of 1m granularity data" in msg) or (
+            "1m data not available" in msg
+        )
+
+    def _is_yahoo_no_price_data(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return ("possibly delisted" in msg) or ("no price data found" in msg)
+
     def _build_controls(self) -> None:
         top = ttk.Frame(self, style="Panel.TFrame")
         top.pack(fill="x", padx=10, pady=10)
@@ -660,6 +729,8 @@ class PricesTab(ttk.Frame):
             "3mo",
         )
         interval.grid(row=0, column=3, padx=(6, 14), sticky="w")
+
+        # If user changes interval, we can auto-correct period later in refresh.
 
         ttk.Label(top, text="Period:", style="Panel.TLabel").grid(
             row=0, column=4, sticky="w"
@@ -797,12 +868,25 @@ class PricesTab(ttk.Frame):
         def worker() -> None:
             try:
                 label, symbol = self._symbol_for_instrument(self.instrument_var.get())
-                interval = self.interval_var.get().strip()
-                period = self.period_var.get().strip()
+
+                raw_interval = self.interval_var.get().strip()
+                raw_period = self.period_var.get().strip()
+                interval, period, note = self._normalize_interval_period(
+                    raw_interval, raw_period
+                )
+
+                # If we adjusted the user's selection, reflect it in UI (thread-safe via after)
+                if interval != raw_interval or period != raw_period:
+                    self.after(0, lambda: self.interval_var.set(interval))
+                    self.after(0, lambda: self.period_var.set(period))
+
+                if note:
+                    self.after(0, lambda: self.status.configure(text=note))
 
                 quote: QuoteSnapshot = self.scraper.fetch_quote(
                     symbol=symbol, ticker_label=label
                 )
+
                 bars = self.scraper.fetch_history(
                     symbol=symbol,
                     ticker_label=label,
@@ -816,12 +900,84 @@ class PricesTab(ttk.Frame):
                 quote_row = asdict(quote)
                 history_rows = [asdict(b) for b in bars]
 
+                # Handle "empty history" as user-friendly message (often rate limit or Yahoo restriction)
+                if not history_rows:
+                    # Still show quote JSON, but tell user about common causes.
+                    msg = (
+                        "History kosong dari Yahoo.\n\n"
+                        "Penyebab umum:\n"
+                        "- Rate limit (Too Many Requests)\n"
+                        "- Kombinasi interval/period tidak didukung\n\n"
+                        "Coba:\n"
+                        "- ganti interval ke 1d\n"
+                        "- pilih period 5d / 1mo\n"
+                        "- tunggu beberapa menit lalu refresh"
+                    )
+                    self.after(0, lambda: self.quote_text.delete("1.0", "end"))
+                    self.after(
+                        0,
+                        lambda: self.quote_text.insert("1.0", _pretty_json(quote_row)),
+                    )
+                    self.after(
+                        0,
+                        lambda: self.status.configure(
+                            text="History kosong (lihat quote JSON)."
+                        ),
+                    )
+                    self.after(0, lambda: messagebox.showwarning("Yahoo Finance", msg))
+                    return
+
                 self.after(
                     0,
                     lambda: self._apply_prices(label, symbol, quote_row, history_rows),
                 )
             except Exception as exc:
-                self.after(0, lambda: self._on_error(f"Price refresh failed:\n{exc}"))
+                # Friendly messages for common failures
+                if self._is_yfinance_rate_limit_error(exc):
+                    msg = (
+                        "Yahoo Finance rate limit (Too Many Requests).\n\n"
+                        "Tunggu 10–30 menit, jangan spam refresh, lalu coba lagi."
+                    )
+                    self.after(0, lambda: messagebox.showwarning("Rate limit", msg))
+                    self.after(
+                        0,
+                        lambda: self.status.configure(
+                            text="Rate limited by Yahoo. Try later."
+                        ),
+                    )
+                elif self._is_yahoo_granularity_window_error(exc):
+                    msg = (
+                        "Batas Yahoo untuk interval 1m tercapai.\n\n"
+                        "Solusi:\n"
+                        "- pakai interval 1d untuk period panjang\n"
+                        "- atau interval 1m hanya untuk period 5d"
+                    )
+                    self.after(0, lambda: messagebox.showwarning("Interval limit", msg))
+                    self.after(
+                        0,
+                        lambda: self.status.configure(
+                            text="Interval/period not supported. Adjusted."
+                        ),
+                    )
+                elif self._is_yahoo_no_price_data(exc):
+                    msg = (
+                        "Yahoo mengembalikan 'no price data found / possibly delisted'.\n\n"
+                        "Biasanya ini bukan delisted, tapi:\n"
+                        "- rate limit\n"
+                        "- interval/period tidak didukung\n\n"
+                        "Coba interval=1d dan period=1mo, lalu refresh."
+                    )
+                    self.after(0, lambda: messagebox.showwarning("No data", msg))
+                    self.after(
+                        0,
+                        lambda: self.status.configure(
+                            text="Yahoo returned no price data."
+                        ),
+                    )
+                else:
+                    self.after(
+                        0, lambda: self._on_error(f"Price refresh failed:\n{exc}")
+                    )
             finally:
                 self.after(0, self._refresh_done)
 
