@@ -682,25 +682,9 @@ class PricesTab(ttk.Frame):
         )
         period.grid(row=0, column=5, padx=(6, 14), sticky="w")
 
-        ttk.Label(top, text="Start (YYYY-MM-DD):", style="Panel.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(8, 0)
-        )
-        self.start_var = tk.StringVar(value="")
-        ttk.Entry(top, textvariable=self.start_var, width=14).grid(
-            row=1, column=1, padx=(6, 14), sticky="w", pady=(8, 0)
-        )
-
-        ttk.Label(top, text="End (YYYY-MM-DD):", style="Panel.TLabel").grid(
-            row=1, column=2, sticky="w", pady=(8, 0)
-        )
-        self.end_var = tk.StringVar(value="")
-        ttk.Entry(top, textvariable=self.end_var, width=14).grid(
-            row=1, column=3, padx=(6, 14), sticky="w", pady=(8, 0)
-        )
-
         self.auto_adjust = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="Auto-adjust", variable=self.auto_adjust).grid(
-            row=1, column=4, sticky="w", pady=(8, 0)
+            row=1, column=0, sticky="w", pady=(8, 0)
         )
 
         btns = ttk.Frame(top, style="Panel.TFrame")
@@ -816,9 +800,6 @@ class PricesTab(ttk.Frame):
                 interval = self.interval_var.get().strip()
                 period = self.period_var.get().strip()
 
-                start = _parse_date_yyyy_mm_dd(self.start_var.get())
-                end = _parse_date_yyyy_mm_dd(self.end_var.get())
-
                 quote: QuoteSnapshot = self.scraper.fetch_quote(
                     symbol=symbol, ticker_label=label
                 )
@@ -827,8 +808,8 @@ class PricesTab(ttk.Frame):
                     ticker_label=label,
                     interval=interval,
                     period=period,
-                    start=start,
-                    end=end,
+                    start=None,
+                    end=None,
                     auto_adjust=bool(self.auto_adjust.get()),
                 )
 
