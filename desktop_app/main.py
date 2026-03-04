@@ -875,13 +875,28 @@ class PricesTab(ttk.Frame):
                     raw_interval, raw_period
                 )
 
+                # Snapshot what we will actually use (avoid late-binding surprises in lambdas).
+                used_interval = interval
+                used_period = period
+
                 # If we adjusted the user's selection, reflect it in UI (thread-safe via after)
                 if interval != raw_interval or period != raw_period:
-                    self.after(0, lambda: self.interval_var.set(interval))
-                    self.after(0, lambda: self.period_var.set(period))
+                    self.after(0, lambda v=interval: self.interval_var.set(v))
+                    self.after(0, lambda v=period: self.period_var.set(v))
 
                 if note:
-                    self.after(0, lambda: self.status.configure(text=note))
+                    self.after(
+                        0,
+                        lambda t=note: self.status.configure(text=t),
+                    )
+
+                # Always show what we actually used (interval/period)
+                self.after(
+                    0,
+                    lambda i=used_interval, p=used_period: self.status.configure(
+                        text=f"Fetching prices… (interval={i}, period={p})"
+                    ),
+                )
 
                 quote: QuoteSnapshot = self.scraper.fetch_quote(
                     symbol=symbol, ticker_label=label
@@ -890,8 +905,8 @@ class PricesTab(ttk.Frame):
                 bars = self.scraper.fetch_history(
                     symbol=symbol,
                     ticker_label=label,
-                    interval=interval,
-                    period=period,
+                    interval=used_interval,
+                    period=used_period,
                     start=None,
                     end=None,
                     auto_adjust=bool(self.auto_adjust.get()),
@@ -908,6 +923,9 @@ class PricesTab(ttk.Frame):
                         "Penyebab umum:\n"
                         "- Rate limit (Too Many Requests)\n"
                         "- Kombinasi interval/period tidak didukung\n\n"
+                        "Dipakai:\n"
+                        f"- interval={used_interval}\n"
+                        f"- period={used_period}\n\n"
                         "Coba:\n"
                         "- ganti interval ke 1d\n"
                         "- pilih period 5d / 1mo\n"
@@ -920,8 +938,8 @@ class PricesTab(ttk.Frame):
                     )
                     self.after(
                         0,
-                        lambda: self.status.configure(
-                            text="History kosong (lihat quote JSON)."
+                        lambda i=used_interval, p=used_period: self.status.configure(
+                            text=f"History kosong (interval={i}, period={p})"
                         ),
                     )
                     self.after(0, lambda: messagebox.showwarning("Yahoo Finance", msg))

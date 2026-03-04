@@ -1,5 +1,5 @@
 # ============================================================
-# Yahoo Finance Price Scraper (no pandas in YOUR code)
+# Yahoo Finance Price Scraper (yfinance) - resilient history fetch
 # ============================================================
 #
 # Goal
@@ -8,39 +8,28 @@
 # - Quote snapshot (best-effort)
 # - Historical OHLCV bars
 #
-# Without adding pandas as an explicit dependency in this repo.
+# Key problems this file handles
+# ------------------------------
+# 1) Yahoo intraday limits:
+#    - interval=1m only allows ~7-8 days of data.
+#    If you ask for 1m + 3mo, yfinance throws an error and may log
+#    "possibly delisted; no price data found" (misleading).
 #
-# Important reality check
-# -----------------------
-# `yfinance` itself commonly depends on `pandas` internally.
-# This file avoids importing pandas directly, but if your environment
-# does not have pandas, `yfinance` may still fail at runtime depending
-# on its version and code paths.
+# 2) Rate limits:
+#    - Yahoo can return "Too Many Requests" and yfinance raises
+#      YFRateLimitError. In that case we fail gracefully and return [].
 #
-# If that happens, the real fix is either:
-# - install pandas (not desired in your case), OR
-# - bypass yfinance and hit a lightweight HTTP endpoint directly.
-#
-# This implementation:
-# - Uses `yfinance.download()` so you can fetch history in one call.
-# - Normalizes the result into plain Python dict/dataclasses using
-#   safe, best-effort conversions.
+# What we do
+# ----------
+# - Enforce safe interval/period combinations (specifically for intraday).
+# - Prefer period-based fetching (since your UI keeps `period` only).
+# - Gracefully return [] on known Yahoo limitations and rate limits.
 #
 # Targets (default)
 # -----------------
 # - USD/IDR FX:      "IDR=X"
 # - IHSG index:      "^JKSE"
 # - BBCA stock:      "BBCA.JK"
-#
-# Usage
-# -----
-# python scrapers/yfinance_price_scraper.py
-# python scrapers/yfinance_price_scraper.py --tickers IDR=X ^JKSE BBCA.JK
-# python scrapers/yfinance_price_scraper.py --labels USDIDR IHSG BBCA
-# python scrapers/yfinance_price_scraper.py --period 6mo --interval 1d
-# python scrapers/yfinance_price_scraper.py --start 2024-01-01 --end 2024-12-31
-# python scrapers/yfinance_price_scraper.py --fmt json
-# python scrapers/yfinance_price_scraper.py --no-export
 #
 from __future__ import annotations
 
@@ -51,7 +40,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
 # Allow running directly: `python scrapers/yfinance_price_scraper.py`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -139,6 +128,54 @@ def _to_float(v: Any) -> Optional[float]:
         return f
     except Exception:
         return None
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        ("too many requests" in msg) or ("rate limit" in msg) or ("ratelimited" in msg)
+    )
+
+
+def _is_intraday_granularity_limit_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return ("1m data not available" in msg) or (
+        "days worth of 1m granularity data" in msg
+    )
+
+
+def _is_no_price_data_error(exc: BaseException) -> bool:
+    # yfinance sometimes wraps Yahoo errors with this misleading message
+    msg = str(exc).lower()
+    return ("possibly delisted" in msg) or ("no price data found" in msg)
+
+
+def _normalize_interval_period(
+    interval: str, period: Optional[str]
+) -> tuple[str, Optional[str], Optional[str]]:
+    """
+    Enforce safe combinations to avoid Yahoo errors.
+
+    Returns: (interval, period, note)
+    """
+    interval = (interval or "").strip() or "1d"
+    period = (period or "").strip() or None
+
+    note: Optional[str] = None
+
+    # Strict guard: 1m cannot be fetched for long periods
+    if interval == "1m":
+        if period not in ("1d", "5d"):
+            note = "Adjusted period to 5d because interval=1m is limited to ~7-8 days on Yahoo."
+            period = "5d"
+
+    # Guard: intraday commonly fails for huge lookbacks
+    if interval in ("5m", "15m", "30m", "60m", "90m", "1h"):
+        if period in ("10y", "max"):
+            note = f"Adjusted period to 2y because interval={interval} often fails for period={period}."
+            period = "2y"
+
+    return interval, period, note
 
 
 def _safe_get(d: Any, *keys: str) -> Any:
@@ -449,25 +486,55 @@ class YahooFinancePriceScraper:
         """
         Fetch historical OHLCV bars via `yfinance.download()` (best-effort).
 
-        You can specify either:
-        - `period` (e.g. '3mo') OR
-        - `start` / `end` (YYYY-MM-DD strings)
+        This function is designed to be called from your desktop UI which uses
+        `period` (not start/end). We still keep start/end for CLI/backwards use.
 
-        Returns a list of PriceBar with RFC3339 UTC timestamps.
+        Behavior:
+        - Normalizes interval/period to avoid Yahoo intraday window limits.
+        - Returns [] (no crash) on rate limits and known Yahoo restrictions.
         """
-        # yfinance.download can fetch quickly; group_by='column' gives normal columns.
-        # If multiple tickers are passed, it returns multiindex columns; we only pass one.
-        data = yf.download(
-            tickers=symbol,
-            interval=interval,
-            period=None if start else period,
-            start=start,
-            end=end,
-            auto_adjust=auto_adjust,
-            progress=False,
-            group_by="column",
-            threads=False,
-        )
+        interval_n, period_n, _note = _normalize_interval_period(interval, period)
+
+        # If caller provided start/end, yfinance typically ignores `period`.
+        # We keep that semantics but still protect intraday combos.
+        use_period = None if start else period_n
+
+        try:
+            data = yf.download(
+                tickers=symbol,
+                interval=interval_n,
+                period=use_period,
+                start=start,
+                end=end,
+                auto_adjust=auto_adjust,
+                progress=False,
+                group_by="column",
+                threads=False,
+            )
+        except Exception as exc:
+            # Known issues: rate limit or unsupported intraday range
+            if (
+                _is_rate_limit_error(exc)
+                or _is_intraday_granularity_limit_error(exc)
+                or _is_no_price_data_error(exc)
+            ):
+                return []
+            raise
+
+        # Some yfinance failures return an "empty" frame without raising.
+        # We treat it as no-data and let UI decide messaging.
+        if data is None:
+            return []
+
+        empty_attr = getattr(data, "empty", None)
+        try:
+            if callable(empty_attr):
+                if cast(Any, empty_attr)():
+                    return []
+            elif isinstance(empty_attr, bool) and empty_attr:
+                return []
+        except Exception:
+            pass
 
         bars: List[PriceBar] = []
         for idx, row in _iter_history_rows(data):
@@ -475,7 +542,6 @@ class YahooFinancePriceScraper:
             if not dt_utc:
                 continue
 
-            # Column keys can be 'Open'/'High' etc. Use a few variations.
             def get_col(*names: str) -> Any:
                 for n in names:
                     if isinstance(row, dict) and n in row:
@@ -493,7 +559,7 @@ class YahooFinancePriceScraper:
                 PriceBar(
                     ticker=ticker_label,
                     symbol=symbol,
-                    interval=interval,
+                    interval=interval_n,
                     datetime_utc=dt_utc,
                     open=o,
                     high=h,
