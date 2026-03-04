@@ -26,20 +26,23 @@
 #   2 → Medium
 #   3 → Low
 # ============================================================
+# Economic Calendar Scraper - Investing.com
+# ============================================================
 
 from __future__ import annotations
 
-import re
 import sys
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
-from zoneinfo import ZoneInfo
 
-from bs4 import BeautifulSoup, Tag
+import requests
+from bs4 import BeautifulSoup
+from dateutil import parser
+from pytz import timezone
 
-# Allow running this file directly
+# Allow running this file directly (python scrapers/investing_scraper.py)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import config
@@ -61,34 +64,35 @@ from utils.helpers import (
 
 log = get_logger("investing", config.LOG_LEVEL)
 
-SOURCE_NAME = "investing"
 
-# ── Impact parsing ────────────────────────────────────────────
-# Investing.com encodes importance via CSS class names on the <td> element
-# ("bull" icons) or via a <span> wrapping a number of filled icons.
-# We count the "grayFullBullishIcon" (or "bullish") icons to derive impact.
-_ICON_TO_IMPACT: dict[int, str] = {
-    3: "High",
-    2: "Medium",
-    1: "Low",
-    0: "Low",
-}
+class InvestingComScraper:
+    # ── Impact parsing ────────────────────────────────────────────
+    # Investing.com encodes importance via CSS class names on the <td> element
+    # ("bull" icons) or via a <span> wrapping a number of filled icons.
+    # We count the "grayFullBullishIcon" (or "bullish") icons to derive impact.
+    _ICON_TO_IMPACT: dict[int, str] = {
+        3: "High",
+        2: "Medium",
+        1: "Low",
+        0: "Low",
+    }
 
-# Map the country flag CSS class to a currency code.
-# Investing.com places classes like "ceFlags US" or "ceFlags ID" on spans.
-_FLAG_TO_CURRENCY: dict[str, str] = {
-    "US": "USD",
-    "ID": "IDR",
-    "EU": "EUR",
-    "GB": "GBP",
-    "JP": "JPY",
-    "AU": "AUD",
-    "NZ": "NZD",
-    "CA": "CAD",
-    "CH": "CHF",
-    "CN": "CNY",
-    "KR": "KRW",
-}
+    # Map the country flag CSS class to a currency code.
+    # Investing.com places classes like "ceFlags US" or "ceFlags ID" on spans.
+    _FLAG_TO_CURRENCY: dict[str, str] = {
+        "US": "USD",
+        "ID": "IDR",
+        "EU": "EUR",
+        "GB": "GBP",
+        "JP": "JPY",
+        "AU": "AUD",
+        "NZ": "NZD",
+        "CA": "CAD",
+        "CH": "CHF",
+        "CN": "CNY",
+        "KR": "KRW",
+    }
+
 
 # Fallback: text inside the currency cell → currency code
 _TEXT_TO_CURRENCY: dict[str, str] = {
@@ -192,23 +196,76 @@ class InvestingComScraper:
             list(self.country_ids.keys()),
         )
 
-        html_fragment = self._request_calendar_data(date_from, date_to)
-        if not html_fragment:
-            log.error("Investing.com: received empty data from API.")
-            return []
+        # Pagination: Investing may return partial rows unless we increment limit_from.
+        all_events: list[EconomicEvent] = []
+        offset = 0
+        page = 0
+        seen_event_keys: set[str] = set()
 
-        events = self._parse_html_fragment(html_fragment, date_from)
-        log.info("Investing.com: parsed %d raw events.", len(events))
+        while True:
+            page += 1
+            html_fragment = self._request_calendar_data(
+                date_from, date_to, limit_from=offset
+            )
+            if not html_fragment:
+                if page == 1:
+                    log.error("Investing.com: received empty data from API.")
+                    return []
+                log.info(
+                    "Investing.com: no more data (empty page). Stopping pagination."
+                )
+                break
+
+            events = self._parse_html_fragment(html_fragment, date_from)
+            if not events:
+                log.info(
+                    "Investing.com: parsed 0 events on page %d. Stopping pagination.",
+                    page,
+                )
+                break
+
+            # De-dup across pages (Investing can repeat boundary rows)
+            new_count = 0
+            for e in events:
+                key = (
+                    f"{e.date}|{e.time}|{e.currency}|{e.title}|{e.source}|{e.event_id}"
+                )
+                if key in seen_event_keys:
+                    continue
+                seen_event_keys.add(key)
+                all_events.append(e)
+                new_count += 1
+
+            log.info(
+                "Investing.com: page %d parsed=%d new=%d total=%d (offset=%d)",
+                page,
+                len(events),
+                new_count,
+                len(all_events),
+                offset,
+            )
+
+            # If this page added nothing new, stop to avoid infinite loop
+            if new_count == 0:
+                break
+
+            # Advance offset. We don't rely on rows_num because it can be approximate.
+            offset += len(events)
+
+            # Safety cap to prevent runaway loops if site changes.
+            if page >= 50:
+                log.warning("Investing.com: pagination safety cap reached (50 pages).")
+                break
 
         if self.impact_filter:
-            events = [e for e in events if e.impact in self.impact_filter]
+            all_events = [e for e in all_events if e.impact in self.impact_filter]
             log.info(
                 "Investing.com: %d events after impact filter %s",
-                len(events),
+                len(all_events),
                 self.impact_filter,
             )
 
-        return sort_events(events)
+        return sort_events(all_events)
 
     def fetch_high_impact(self) -> list[EconomicEvent]:
         """Convenience method — returns only High-impact events."""
@@ -252,25 +309,22 @@ class InvestingComScraper:
 
     # ── API Request ───────────────────────────────────────────
 
-    def _build_post_body(self, date_from: str, date_to: str) -> dict:
+    def _build_post_body(
+        self, date_from: str, date_to: str, limit_from: int = 0
+    ) -> dict:
         """
         Build the form-encoded POST body for the Investing.com
         internal calendar API.
 
         The body must list each country ID and importance ID separately
         using repeated keys with the ``[]`` suffix (PHP-style arrays).
-        """
-        # requests encodes list values as repeated keys when a list is used
-        body: dict = {
-            "dateFrom": date_from,
-            "dateTo": date_to,
-            "currentTab": "custom",
-            "submitFilters": "1",
-            "limit_from": "0",
-        }
 
+        Parameters
+        ----------
+        limit_from:
+            Pagination offset. Investing uses this to page through results.
+        """
         # Add country IDs as repeated keys: country[]=5&country[]=48
-        # requests.post(data=...) handles lists for the same key correctly.
         country_values = list(self.country_ids.values())
         importance_values = list(self.importance_ids.values())
 
@@ -280,20 +334,28 @@ class InvestingComScraper:
             body_tuples.append(("country[]", str(val)))
         for val in importance_values:
             body_tuples.append(("importance[]", str(val)))
+
         body_tuples.append(("dateFrom", date_from))
         body_tuples.append(("dateTo", date_to))
         body_tuples.append(("currentTab", "custom"))
         body_tuples.append(("submitFilters", "1"))
-        body_tuples.append(("limit_from", "0"))
+        body_tuples.append(("limit_from", str(int(limit_from))))
 
         return body_tuples  # type: ignore[return-value]
 
-    def _request_calendar_data(self, date_from: str, date_to: str) -> Optional[str]:
+    def _request_calendar_data(
+        self, date_from: str, date_to: str, limit_from: int = 0
+    ) -> Optional[str]:
         """
         POST to the Investing.com internal API and return the raw HTML
         fragment from the ``data`` key, or ``None`` on failure.
+
+        Parameters
+        ----------
+        limit_from:
+            Pagination offset. Investing uses this to page through results.
         """
-        body = self._build_post_body(date_from, date_to)
+        body = self._build_post_body(date_from, date_to, limit_from=limit_from)
 
         resp = safe_post(
             self._session,
@@ -321,15 +383,20 @@ class InvestingComScraper:
 
         html = payload.get("data", "")
         if not html:
-            log.warning(
-                "Investing.com: JSON response has no 'data' key or it is empty. "
-                "Payload keys: %s",
+            # On later pages, empty means \"no more rows\"
+            log.debug(
+                "Investing.com: empty 'data' for limit_from=%s (keys=%s)",
+                limit_from,
                 list(payload.keys()),
             )
             return None
 
         rows_num = payload.get("rows_num", "unknown")
-        log.debug("Investing.com: API returned ~%s rows.", rows_num)
+        log.debug(
+            "Investing.com: API returned ~%s rows (limit_from=%s).",
+            rows_num,
+            limit_from,
+        )
         return html
 
     # ── HTML Parsing ──────────────────────────────────────────
