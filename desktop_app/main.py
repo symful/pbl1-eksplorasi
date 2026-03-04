@@ -389,14 +389,6 @@ class CalendarTab(ttk.Frame):
             row=1, column=1, sticky="w", padx=(6, 14), pady=(8, 0)
         )
 
-        ttk.Label(top, text="Days ahead:", style="Panel.TLabel").grid(
-            row=1, column=2, sticky="w", pady=(8, 0)
-        )
-        self.days_ahead_var = tk.StringVar(value="7")
-        ttk.Entry(top, textvariable=self.days_ahead_var, width=8).grid(
-            row=1, column=3, sticky="w", padx=(6, 14), pady=(8, 0)
-        )
-
         btns = ttk.Frame(top, style="Panel.TFrame")
         btns.grid(row=0, column=6, rowspan=2, sticky="e", padx=(20, 0))
 
@@ -512,7 +504,6 @@ class CalendarTab(ttk.Frame):
         def worker() -> None:
             try:
                 days_back = _safe_int(self.days_back_var.get(), 1)
-                days_ahead = _safe_int(self.days_ahead_var.get(), 7)
                 impacts = self._selected_impacts()
                 currency = self.currency_var.get().strip().upper()
                 currency_filter = None if currency == "ALL" else [currency]
@@ -522,7 +513,7 @@ class CalendarTab(ttk.Frame):
                     impact_filter=impacts if impacts else None,
                     currency_filter=currency_filter,
                     days_back=days_back,
-                    days_ahead=days_ahead,
+                    days_ahead=0,
                     export_fmt="json",
                 )
                 events = [_event_to_dict(e) for e in (result.events or [])]
