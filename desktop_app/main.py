@@ -518,7 +518,7 @@ class CalendarTab(ttk.Frame):
                 currency_filter = None if currency == "ALL" else [currency]
 
                 result = run_pipeline(
-                    sources=["ff", "inv"],
+                    sources=["inv"],
                     impact_filter=impacts if impacts else None,
                     currency_filter=currency_filter,
                     days_back=days_back,
