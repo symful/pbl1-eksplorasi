@@ -32,21 +32,45 @@ import traceback
 from datetime import datetime
 from typing import Optional
 
-import config
-from models.economic_event import EconomicEvent
-from scrapers.forexfactory_scraper import ForexFactoryScraper
-from scrapers.investing_scraper import InvestingComScraper
-from utils.helpers import (
-    TZ_WIB,
-    add_file_handler,
-    deduplicate_events,
-    ensure_output_dir,
-    get_logger,
-    get_scrape_window,
-    print_summary_table,
-    save_events,
-    sort_events,
-)
+# NOTE:
+# This module is used in two ways:
+# 1) As a script: `python main.py` from inside `scrape/`
+# 2) As an importable package module: `from scrape.main import run_pipeline`
+#
+# To support both, we try absolute imports first (package mode),
+# then fall back to relative-to-cwd imports (script mode).
+try:
+    from . import config
+    from .models.economic_event import EconomicEvent
+    from .scrapers.forexfactory_scraper import ForexFactoryScraper
+    from .scrapers.investing_scraper import InvestingComScraper
+    from .utils.helpers import (
+        TZ_WIB,
+        add_file_handler,
+        deduplicate_events,
+        ensure_output_dir,
+        get_logger,
+        get_scrape_window,
+        print_summary_table,
+        save_events,
+        sort_events,
+    )
+except Exception:  # pragma: no cover
+    import config
+    from models.economic_event import EconomicEvent
+    from scrapers.forexfactory_scraper import ForexFactoryScraper
+    from scrapers.investing_scraper import InvestingComScraper
+    from utils.helpers import (
+        TZ_WIB,
+        add_file_handler,
+        deduplicate_events,
+        ensure_output_dir,
+        get_logger,
+        get_scrape_window,
+        print_summary_table,
+        save_events,
+        sort_events,
+    )
 
 # ── Logger ────────────────────────────────────────────────────
 log = get_logger("main", config.LOG_LEVEL)

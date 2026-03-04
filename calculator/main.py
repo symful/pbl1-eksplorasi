@@ -281,7 +281,7 @@ def handle_button(label, app):
 
 
 def main():
-    app = CalculatorUI(theme=_ui_theme)
+    app = CalculatorUI()
     try:
         style = ttk.Style()
         style.theme_use("clam")

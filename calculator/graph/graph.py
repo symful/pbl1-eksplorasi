@@ -7,16 +7,18 @@ import numpy as np
 matplotlib.use("TkAgg")
 
 
-def _resolve(theme):
+def _resolve(theme=None):
+    # Allow calls without a theme (e.g. during initial UI construction)
+    theme = theme or {}
     return {
-        "fig_bg": theme.get("bg"),
-        "ax_bg": theme.get("display_bg"),
-        "line": theme.get("btn_op_bg"),
-        "zero": theme.get("btn_bg"),
-        "grid": theme.get("btn_bg"),
-        "text": theme.get("fg"),
-        "tick": theme.get("display_fg"),
-        "spine": theme.get("btn_bg"),
+        "fig_bg": theme.get("bg", "#11111b"),
+        "ax_bg": theme.get("display_bg", "#0b0f1a"),
+        "line": theme.get("btn_op_bg", "#89b4fa"),
+        "zero": theme.get("btn_bg", "#313244"),
+        "grid": theme.get("btn_bg", "#313244"),
+        "text": theme.get("fg", "#cdd6f4"),
+        "tick": theme.get("display_fg", "#a6adc8"),
+        "spine": theme.get("btn_bg", "#313244"),
     }
 
 
