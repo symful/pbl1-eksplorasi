@@ -34,13 +34,16 @@ from __future__ import annotations
 import sys
 import os
 import time
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from dateutil import parser
-from pytz import timezone
+
+from scrape.scrapers.forexfactory_scraper import SOURCE_NAME
 
 # Allow running this file directly (python scrapers/investing_scraper.py)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
