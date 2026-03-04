@@ -49,3 +49,4 @@ def cosine(a):
 
 def tangent(a):
     return math.tan(a)
+
