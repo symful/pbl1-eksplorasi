@@ -10,13 +10,7 @@ from datetime import datetime, timezone
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
-import matplotlib
-
-matplotlib.use("TkAgg")
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
-
-# Ensure we can import from project roots
+# Ensure we can import from project root
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 sys.path.insert(0, _PROJECT_ROOT)
@@ -27,7 +21,7 @@ try:
 except Exception as exc:  # pragma: no cover
     raise SystemExit(
         "Cannot import `scrape.main.run_pipeline`. "
-        "Make sure you're running from the project and dependencies are installed."
+        "Run this from the project root and ensure dependencies are installed."
     ) from exc
 
 # --- Import price scraper (yfinance) ---
@@ -39,12 +33,12 @@ try:
 except Exception as exc:  # pragma: no cover
     raise SystemExit(
         "Cannot import yfinance price scraper. "
-        "Did you add/install requirements in `scrape/requirements.txt`?"
+        "Ensure `yfinance` is installed in the same environment."
     ) from exc
 
 
 # ============================================================
-# UI Theme (simple dark)
+# Simple dark theme (ttk + tk widgets)
 # ============================================================
 
 C = {
@@ -91,24 +85,24 @@ def _parse_date_yyyy_mm_dd(s: str) -> Optional[str]:
         return None
 
 
-def _set_status(lbl: tk.Label, text: str) -> None:
-    lbl.configure(text=text)
-
-
 def _pretty_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
+def _treeview_clear(tv: ttk.Treeview) -> None:
+    for iid in tv.get_children():
+        tv.delete(iid)
+
+
 def _event_to_dict(e: Any) -> Dict[str, Any]:
     """
-    Convert EconomicEvent into a dict that is safe to JSON-serialize.
-
-    We avoid importing the model type directly to keep the UI resilient.
+    Convert EconomicEvent into a dict safe for JSON.
+    We avoid importing the model type directly to keep UI resilient.
     """
     if hasattr(e, "to_dict"):
         return e.to_dict(include_raw=False)  # type: ignore[attr-defined]
     try:
-        d = asdict(e)  # dataclass
+        d = asdict(e)
     except Exception:
         d = dict(e) if isinstance(e, dict) else {"value": str(e)}
 
@@ -118,9 +112,226 @@ def _event_to_dict(e: Any) -> Dict[str, Any]:
     return d
 
 
-def _treeview_clear(tv: ttk.Treeview) -> None:
-    for iid in tv.get_children():
-        tv.delete(iid)
+# ============================================================
+# Pure Tkinter Canvas line chart
+# ============================================================
+
+
+class CanvasLineChart(tk.Canvas):
+    """
+    Minimal line chart using pure Tkinter Canvas.
+
+    - Call `set_series(points)` with points as list of (x, y):
+      where x is datetime (or float), y is float.
+    - The chart auto-scales.
+    """
+
+    def __init__(self, parent: tk.Widget, **kwargs: Any) -> None:
+        super().__init__(
+            parent,
+            bg=C["panel"],
+            highlightthickness=1,
+            highlightbackground=C["surface2"],
+            **kwargs,
+        )
+        self._points: List[Tuple[datetime, float]] = []
+        self._title: str = ""
+        self._subtitle: str = ""
+        self._y_label: str = "Price"
+
+        self.bind("<Configure>", lambda _e: self._redraw())
+
+    def set_title(self, title: str, subtitle: str = "") -> None:
+        self._title = title or ""
+        self._subtitle = subtitle or ""
+        self._redraw()
+
+    def set_y_label(self, text: str) -> None:
+        self._y_label = text or "Value"
+        self._redraw()
+
+    def set_series(self, points: List[Tuple[datetime, float]]) -> None:
+        self._points = points or []
+        self._redraw()
+
+    def clear(self) -> None:
+        self._points = []
+        self._title = ""
+        self._subtitle = ""
+        self.delete("all")
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        w = max(1, int(self.winfo_width()))
+        h = max(1, int(self.winfo_height()))
+
+        pad_l = 56
+        pad_r = 14
+        pad_t = 34
+        pad_b = 26
+
+        plot_x0 = pad_l
+        plot_y0 = pad_t
+        plot_x1 = w - pad_r
+        plot_y1 = h - pad_b
+
+        # Background
+        self.create_rectangle(0, 0, w, h, fill=C["panel"], outline=C["panel"], width=0)
+
+        # Title
+        if self._title:
+            self.create_text(
+                pad_l,
+                12,
+                text=self._title,
+                fill=C["text"],
+                font=("Consolas", 11, "bold"),
+                anchor="w",
+            )
+        if self._subtitle:
+            self.create_text(
+                pad_l,
+                26,
+                text=self._subtitle,
+                fill=C["subtext"],
+                font=("Consolas", 9),
+                anchor="w",
+            )
+
+        # Plot area border
+        self.create_rectangle(
+            plot_x0,
+            plot_y0,
+            plot_x1,
+            plot_y1,
+            outline=C["surface2"],
+            width=1,
+        )
+
+        # No data
+        if len(self._points) < 2:
+            self.create_text(
+                (plot_x0 + plot_x1) / 2,
+                (plot_y0 + plot_y1) / 2,
+                text="No data",
+                fill=C["subtext"],
+                font=("Consolas", 11),
+            )
+            return
+
+        # Extract ranges
+        xs = [p[0].timestamp() for p in self._points]
+        ys = [p[1] for p in self._points]
+
+        x_min = min(xs)
+        x_max = max(xs)
+        y_min = min(ys)
+        y_max = max(ys)
+
+        # Avoid zero range
+        if x_max == x_min:
+            x_max = x_min + 1
+        if y_max == y_min:
+            y_max = y_min + 1e-9
+
+        # Add small padding for y-range
+        y_pad = (y_max - y_min) * 0.06
+        y_min -= y_pad
+        y_max += y_pad
+
+        def x_to_px(x_ts: float) -> float:
+            return plot_x0 + (x_ts - x_min) * (plot_x1 - plot_x0) / (x_max - x_min)
+
+        def y_to_px(y: float) -> float:
+            return plot_y1 - (y - y_min) * (plot_y1 - plot_y0) / (y_max - y_min)
+
+        # Grid (horizontal)
+        grid_lines = 4
+        for i in range(grid_lines + 1):
+            t = i / grid_lines
+            yv = y_min + (y_max - y_min) * t
+            py = y_to_px(yv)
+            self.create_line(
+                plot_x0,
+                py,
+                plot_x1,
+                py,
+                fill=C["surface"],
+                width=1,
+                dash=(3, 4),
+            )
+            self.create_text(
+                plot_x0 - 8,
+                py,
+                text=f"{yv:.4g}",
+                fill=C["subtext"],
+                font=("Consolas", 8),
+                anchor="e",
+            )
+
+        # X axis labels: show start/end times (UTC)
+        start_dt = datetime.fromtimestamp(x_min, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(x_max, tz=timezone.utc)
+        self.create_text(
+            plot_x0,
+            plot_y1 + 12,
+            text=start_dt.strftime("%Y-%m-%d"),
+            fill=C["subtext"],
+            font=("Consolas", 8),
+            anchor="w",
+        )
+        self.create_text(
+            plot_x1,
+            plot_y1 + 12,
+            text=end_dt.strftime("%Y-%m-%d"),
+            fill=C["subtext"],
+            font=("Consolas", 8),
+            anchor="e",
+        )
+
+        # Y label
+        self.create_text(
+            12,
+            (plot_y0 + plot_y1) / 2,
+            text=self._y_label,
+            fill=C["subtext"],
+            font=("Consolas", 9),
+            angle=90,
+        )
+
+        # Build polyline
+        coords: List[float] = []
+        for dt, y in self._points:
+            xt = dt.timestamp()
+            coords.append(x_to_px(xt))
+            coords.append(y_to_px(y))
+
+        # Draw line
+        self.create_line(*coords, fill=C["blue"], width=2, smooth=False)
+
+        # Draw last-point marker
+        last_x = coords[-2]
+        last_y = coords[-1]
+        self.create_oval(
+            last_x - 3,
+            last_y - 3,
+            last_x + 3,
+            last_y + 3,
+            fill=C["yellow"],
+            outline=C["panel"],
+            width=1,
+        )
+
+        # Show last value label
+        last_val = self._points[-1][1]
+        self.create_text(
+            plot_x1,
+            plot_y0 - 10,
+            text=f"Last: {last_val:.6g}",
+            fill=C["text"],
+            font=("Consolas", 9, "bold"),
+            anchor="e",
+        )
 
 
 # ============================================================
@@ -134,6 +345,7 @@ class CalendarTab(ttk.Frame):
         self.configure(style="Panel.TFrame")
 
         self._events: List[Dict[str, Any]] = []
+        self._refresh_inflight = False
 
         self._build_controls()
         self._build_table()
@@ -143,7 +355,6 @@ class CalendarTab(ttk.Frame):
         top = ttk.Frame(self, style="Panel.TFrame")
         top.pack(fill="x", padx=10, pady=10)
 
-        # Filters
         ttk.Label(top, text="Currency:", style="Panel.TLabel").grid(
             row=0, column=0, sticky="w"
         )
@@ -237,7 +448,7 @@ class CalendarTab(ttk.Frame):
             "time": 70,
             "currency": 50,
             "impact": 70,
-            "title": 340,
+            "title": 420,
             "source": 110,
             "actual": 90,
             "forecast": 90,
@@ -255,6 +466,7 @@ class CalendarTab(ttk.Frame):
         self.tv.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+
         mid.rowconfigure(0, weight=1)
         mid.columnconfigure(0, weight=1)
 
@@ -290,11 +502,12 @@ class CalendarTab(ttk.Frame):
         return impacts
 
     def refresh_async(self) -> None:
-        if getattr(self, "_refresh_inflight", False):
+        if self._refresh_inflight:
             return
         self._refresh_inflight = True
+
         self.refresh_btn.configure(state="disabled")
-        _set_status(self.status, "Fetching calendar…")
+        self.status.configure(text="Fetching calendar…")
 
         def worker() -> None:
             try:
@@ -302,7 +515,6 @@ class CalendarTab(ttk.Frame):
                 days_ahead = _safe_int(self.days_ahead_var.get(), 7)
                 impacts = self._selected_impacts()
                 currency = self.currency_var.get().strip().upper()
-
                 currency_filter = None if currency == "ALL" else [currency]
 
                 result = run_pipeline(
@@ -311,11 +523,9 @@ class CalendarTab(ttk.Frame):
                     currency_filter=currency_filter,
                     days_back=days_back,
                     days_ahead=days_ahead,
-                    export_fmt="json",  # per requirement: JSON only
+                    export_fmt="json",
                 )
-
                 events = [_event_to_dict(e) for e in (result.events or [])]
-                # Push to UI thread
                 self.after(0, lambda: self._apply_events(events))
             except Exception as exc:
                 self.after(
@@ -352,14 +562,13 @@ class CalendarTab(ttk.Frame):
                 ),
             )
 
-        _set_status(
-            self.status,
-            f"Loaded {len(events)} events. Saved JSON outputs to `scrape/output/`.",
+        self.status.configure(
+            text=f"Loaded {len(events)} events. Pipeline JSON saved in `scrape/output/`."
         )
 
     def _on_error(self, msg: str) -> None:
         messagebox.showerror("Error", msg)
-        _set_status(self.status, "Error.")
+        self.status.configure(text="Error.")
 
     def _on_select_event(self, _evt: Any) -> None:
         sel = self.tv.selection()
@@ -371,7 +580,6 @@ class CalendarTab(ttk.Frame):
             return
         if idx < 0 or idx >= len(self._events):
             return
-
         obj = self._events[idx]
         self.json_text.delete("1.0", "end")
         self.json_text.insert("1.0", _pretty_json(obj))
@@ -412,6 +620,7 @@ class PricesTab(ttk.Frame):
 
         self._history_rows: List[Dict[str, Any]] = []
         self._quote_row: Optional[Dict[str, Any]] = None
+        self._refresh_inflight = False
 
         self._build_controls()
         self._build_chart_and_table()
@@ -473,7 +682,6 @@ class PricesTab(ttk.Frame):
         )
         period.grid(row=0, column=5, padx=(6, 14), sticky="w")
 
-        # Optional explicit start/end
         ttk.Label(top, text="Start (YYYY-MM-DD):", style="Panel.TLabel").grid(
             row=1, column=0, sticky="w", pady=(8, 0)
         )
@@ -520,21 +728,12 @@ class PricesTab(ttk.Frame):
         wrap.columnconfigure(1, weight=2)
         wrap.rowconfigure(0, weight=1)
 
-        # Chart
+        # Chart (pure Tk Canvas)
         chart_frame = ttk.Frame(wrap, style="Panel.TFrame")
         chart_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        self.fig = Figure(figsize=(6.5, 4.2), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.fig.patch.set_facecolor(C["bg"])
-        self.ax.set_facecolor(C["panel"])
-        self.ax.tick_params(colors=C["text"], labelsize=8)
-        for spine in self.ax.spines.values():
-            spine.set_edgecolor(C["surface2"])
-        self.ax.grid(True, color=C["surface"], linestyle="--", linewidth=0.5, alpha=0.7)
-
-        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.chart = CanvasLineChart(chart_frame, height=420)
+        self.chart.pack(fill="both", expand=True)
 
         # Table
         table_frame = ttk.Frame(wrap, style="Panel.TFrame")
@@ -557,7 +756,7 @@ class PricesTab(ttk.Frame):
             "high": 70,
             "low": 70,
             "close": 70,
-            "volume": 70,
+            "volume": 80,
         }
 
         for c in cols:
@@ -571,10 +770,9 @@ class PricesTab(ttk.Frame):
         self.tv.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
-
-        self.tv.bind("<<TreeviewSelect>>", self._on_select_bar)
 
     def _build_json_view(self) -> None:
         bot = ttk.Frame(self, style="Panel.TFrame")
@@ -605,11 +803,12 @@ class PricesTab(ttk.Frame):
         return inst, inst
 
     def refresh_async(self) -> None:
-        if getattr(self, "_refresh_inflight", False):
+        if self._refresh_inflight:
             return
         self._refresh_inflight = True
+
         self.refresh_btn.configure(state="disabled")
-        _set_status(self.status, "Fetching prices…")
+        self.status.configure(text="Fetching prices…")
 
         def worker() -> None:
             try:
@@ -661,13 +860,12 @@ class PricesTab(ttk.Frame):
         self._quote_row = quote_row
         self._history_rows = history_rows
 
-        # JSON quote view
+        # Quote JSON view
         self.quote_text.delete("1.0", "end")
         self.quote_text.insert("1.0", _pretty_json(quote_row))
 
-        # Table
+        # Table: show last N bars
         _treeview_clear(self.tv)
-        # show latest N bars to keep UI snappy
         show_rows = history_rows[-200:] if len(history_rows) > 200 else history_rows
         for i, r in enumerate(show_rows):
             self.tv.insert(
@@ -684,58 +882,32 @@ class PricesTab(ttk.Frame):
                 ),
             )
 
-        # Plot (close)
-        self.ax.cla()
-        self.ax.set_facecolor(C["panel"])
-        self.ax.tick_params(colors=C["text"], labelsize=8)
-        for spine in self.ax.spines.values():
-            spine.set_edgecolor(C["surface2"])
-        self.ax.grid(True, color=C["surface"], linestyle="--", linewidth=0.5, alpha=0.7)
-
-        xs: List[datetime] = []
-        ys: List[float] = []
+        # Chart points (close)
+        pts: List[Tuple[datetime, float]] = []
         for r in history_rows:
             dt_s = r.get("datetime_utc")
             close_v = r.get("close")
             if not dt_s or close_v is None:
                 continue
             try:
-                dt = datetime.fromisoformat(str(dt_s).replace("Z", "+00:00"))
-                xs.append(dt)
-                ys.append(float(close_v))
+                dt = datetime.fromisoformat(
+                    str(dt_s).replace("Z", "+00:00")
+                ).astimezone(timezone.utc)
+                pts.append((dt, float(close_v)))
             except Exception:
                 continue
 
-        if xs and ys:
-            self.ax.plot(xs, ys, color=C["blue"], linewidth=1.6)
-            self.ax.set_title(
-                f"{label} ({symbol}) - Close", color=C["text"], fontsize=10, pad=8
-            )
-            self.ax.set_xlabel("Time (UTC)", color=C["subtext"], fontsize=8)
-            self.ax.set_ylabel("Price", color=C["subtext"], fontsize=8)
-        else:
-            self.ax.set_title(
-                f"{label} ({symbol}) - No history data",
-                color=C["red"],
-                fontsize=10,
-                pad=8,
-            )
+        self.chart.set_title(f"{label} ({symbol})", subtitle="Close price (UTC)")
+        self.chart.set_y_label("Close")
+        self.chart.set_series(pts)
 
-        self.fig.autofmt_xdate()
-        self.canvas.draw()
-
-        _set_status(
-            self.status,
-            f"Loaded {len(history_rows)} history bars. Quote fetched at {quote_row.get('fetched_at_utc')}",
+        self.status.configure(
+            text=f"Loaded {len(history_rows)} history bars. Quote at {quote_row.get('fetched_at_utc')}"
         )
 
     def _on_error(self, msg: str) -> None:
         messagebox.showerror("Error", msg)
-        _set_status(self.status, "Error.")
-
-    def _on_select_bar(self, _evt: Any) -> None:
-        # For now, selection doesn't do much; could show selected bar JSON.
-        pass
+        self.status.configure(text="Error.")
 
     def export_json(self) -> None:
         if not self._quote_row and not self._history_rows:
@@ -782,11 +954,9 @@ class PBLDesktopApp(tk.Tk):
         header = ttk.Frame(self, style="Panel.TFrame")
         header.pack(fill="x", padx=12, pady=(12, 6))
 
-        ttk.Label(
-            header,
-            text="PBL Desktop App",
-            style="Title.TLabel",
-        ).pack(side="left")
+        ttk.Label(header, text="PBL Desktop App", style="Title.TLabel").pack(
+            side="left"
+        )
 
         self.clock = ttk.Label(header, text="", style="Sub.TLabel")
         self.clock.pack(side="right")
@@ -805,7 +975,7 @@ class PBLDesktopApp(tk.Tk):
         footer.pack(fill="x", padx=12, pady=(0, 12))
         ttk.Label(
             footer,
-            text="Tip: Refresh Calendar akan menyimpan JSON juga ke `scrape/output/` (pipeline).",
+            text="Tip: Calendar refresh also writes JSON to `scrape/output/` (pipeline).",
             style="Sub.TLabel",
         ).pack(side="left")
 

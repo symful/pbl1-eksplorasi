@@ -8,13 +8,10 @@ urllib3==2.2.1
 
 # HTML Parsing
 beautifulsoup4==4.12.3
-lxml==5.2.2
 
 # Data / Finance
 yfinance==0.2.54
 
-# Visualization (Desktop UI)
-matplotlib==3.8.4
 
 # Date & Timezone
 python-dateutil==2.9.0

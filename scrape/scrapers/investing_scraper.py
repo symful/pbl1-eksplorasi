@@ -362,7 +362,7 @@ class InvestingComScraper:
             Date string (YYYY-MM-DD) to use when the date header is
             not found before the first event row.
         """
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         events: list[EconomicEvent] = []
         current_date = fallback_date
 
