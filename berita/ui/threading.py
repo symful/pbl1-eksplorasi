@@ -1,11 +1,13 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-from scrapers.kompas import KompasScraper
 from scrapers.detik import DetikScraper
+from scrapers.kompas import KompasScraper
 from utils.saver import DataSaver
+
 
 class ScrapeWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
+    log = pyqtSignal(str)
 
     def __init__(self, portal, count):
         super().__init__()
@@ -14,8 +16,9 @@ class ScrapeWorker(QThread):
 
     def run(self):
         try:
+            log_fn = lambda msg: self.log.emit(msg)
             scraper = KompasScraper() if self.portal == "Kompas" else DetikScraper()
-            results = scraper.scrape(self.count)
+            results = scraper.scrape(self.count, log_fn=log_fn)
             DataSaver.save_to_csv(results)
             DataSaver.save_to_json(results)
             self.finished.emit(results)
