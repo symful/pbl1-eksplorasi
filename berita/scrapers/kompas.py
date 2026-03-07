@@ -2,10 +2,8 @@ import time
 
 from core.driver import DriverFactory
 from models.news_item import ContentBlock, NewsItem
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 from utils.saver import DataSaver
 
 _ARTICLE_LINK_SEL = "a[href*='/read/']"

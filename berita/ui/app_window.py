@@ -270,7 +270,7 @@ class AppWindow(QMainWindow):
 
         layout.addWidget(toolbar)
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._article_list = QListWidget()
         self._article_list.itemClicked.connect(self._display_article)
@@ -278,7 +278,7 @@ class AppWindow(QMainWindow):
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         detail_widget = QWidget()
         detail_widget.setStyleSheet(f"background:{BG_BASE};")
@@ -289,7 +289,9 @@ class AppWindow(QMainWindow):
         self._lbl_title = QLabel("Select an article to read.")
         self._lbl_title.setObjectName("articleTitle")
         self._lbl_title.setWordWrap(True)
-        self._lbl_title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._lbl_title.setTextInteractionFlags(
+            Qt.TextInteractionFlags.TextSelectableByMouse
+        )
         detail_layout.addWidget(self._lbl_title)
 
         self._lbl_meta = QLabel("")
@@ -303,7 +305,7 @@ class AppWindow(QMainWindow):
         detail_layout.addWidget(_hline())
 
         self._lbl_image = QLabel()
-        self._lbl_image.setAlignment(Qt.AlignCenter)
+        self._lbl_image.setAlignment(Qt.Alignment.AlignCenter)
         self._lbl_image.setMinimumHeight(200)
         self._lbl_image.setStyleSheet(
             f"background:{BG_CARD}; border:1px dashed {BORDER}; border-radius:6px; color:{TEXT_SEC};"
@@ -384,6 +386,8 @@ class AppWindow(QMainWindow):
         q = text.lower()
         for i in range(self._article_list.count()):
             item = self._article_list.item(i)
+            if item is None:
+                continue
             item.setHidden(q not in item.text().lower())
 
     def _display_article(self, item):
@@ -425,7 +429,12 @@ class AppWindow(QMainWindow):
         if img_path and os.path.exists(img_path):
             pixmap = QPixmap(img_path)
             self._lbl_image.setPixmap(
-                pixmap.scaled(720, 360, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap.scaled(
+                    720,
+                    360,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             )
             self._lbl_image.setStyleSheet("background: transparent; border: none;")
         else:

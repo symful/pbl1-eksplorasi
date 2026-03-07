@@ -16,7 +16,10 @@ class ScrapeWorker(QThread):
 
     def run(self):
         try:
-            log_fn = lambda msg: self.log.emit(msg)
+
+            def log_fn(msg):
+                self.log.emit(msg)
+
             scraper = KompasScraper() if self.portal == "Kompas" else DetikScraper()
             results = scraper.scrape(self.count, log_fn=log_fn)
             DataSaver.save_to_csv(results)
