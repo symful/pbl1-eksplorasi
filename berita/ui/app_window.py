@@ -1,29 +1,27 @@
-import os
 import json
+import os
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont, QPixmap
 from PyQt5.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
-    QComboBox,
-    QTextEdit,
-    QFrame,
-    QTabWidget,
     QListWidget,
-    QSplitter,
+    QMainWindow,
     QProgressBar,
+    QPushButton,
     QScrollArea,
-    QSizePolicy,
-    QSpacerItem,
+    QSplitter,
     QStatusBar,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtGui import QFont, QPixmap, QColor, QPalette
-from PyQt5.QtCore import Qt, QTimer
 from ui.threading import ScrapeWorker
-
 
 BG_BASE = "#0d1117"
 BG_CARD = "#161b22"
