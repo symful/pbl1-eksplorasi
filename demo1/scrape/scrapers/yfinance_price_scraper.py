@@ -321,13 +321,42 @@ def _iter_history_rows(history_obj: Any) -> Iterable[Tuple[Any, Dict[str, Any]]]
 
 
 class YahooFinancePriceScraper:
-    def __init__(self, output_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        output_dir: Optional[str] = None,
+        proxy: Optional[str] = None,
+    ) -> None:
         if output_dir:
             self.output_dir = output_dir
         else:
             self.output_dir = (
                 getattr(config, "OUTPUT_DIR", "output") if config else "output"
             )
+        # Optional proxy URL (e.g. "http://10.0.0.1:3128").
+        # Passed to yfinance Ticker session and yf.download().
+        self.proxy: Optional[str] = proxy or None
+
+    def _make_ticker(self, symbol: str) -> Any:
+        """Create a yf.Ticker, injecting proxy via a requests.Session if set."""
+        if self.proxy:
+            try:
+                import requests as _requests
+
+                session = _requests.Session()
+                session.proxies = {"http": self.proxy, "https": self.proxy}
+                session.headers.update(
+                    {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        )
+                    }
+                )
+                return yf.Ticker(symbol, session=session)
+            except Exception:
+                pass  # fall back to no-proxy Ticker
+        return yf.Ticker(symbol)
 
     def fetch_quote(self, symbol: str, ticker_label: str) -> QuoteSnapshot:
         """
@@ -338,7 +367,7 @@ class YahooFinancePriceScraper:
         - `.info` (heavier; can be slow / rate-limited)
         """
         fetched_at = _utc_now_rfc3339()
-        t = yf.Ticker(symbol)
+        t = self._make_ticker(symbol)
 
         out: Dict[str, Any] = {
             "ticker": ticker_label,
@@ -500,7 +529,7 @@ class YahooFinancePriceScraper:
         use_period = None if start else period_n
 
         try:
-            data = yf.download(
+            dl_kwargs: Dict[str, Any] = dict(
                 tickers=symbol,
                 interval=interval_n,
                 period=use_period,
@@ -511,6 +540,9 @@ class YahooFinancePriceScraper:
                 group_by="column",
                 threads=False,
             )
+            if self.proxy:
+                dl_kwargs["proxy"] = self.proxy
+            data = yf.download(**dl_kwargs)
         except Exception as exc:
             # Known issues: rate limit or unsupported intraday range
             if (
