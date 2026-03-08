@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QCheckBox, QPushButton, QTableWidget, 
     QTableWidgetItem, QHeaderView, QTextEdit, QMessageBox,
-    QFileDialog, QSplitter
+    QFileDialog, QSplitter, QDialog, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
@@ -27,6 +27,30 @@ _AUTO_REFRESH_OPTIONS = [
 ]
 _INTERVAL_OPTIONS = ["1m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
 _PERIOD_OPTIONS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
+
+class ProxySettingsDialog(QDialog):
+    def __init__(self, current_proxies: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Proxy Settings")
+        self.resize(400, 300)
+        
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Enter proxies (one per line):"))
+        layout.addWidget(QLabel("Format: http://ip:port or http://user:pass@ip:port\n(Used to prevent Yahoo Finance rate limits)"))
+        
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText("\n".join(current_proxies))
+        layout.addWidget(self.text_edit)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+        
+    def get_proxies(self) -> List[str]:
+        raw = self.text_edit.toPlainText().splitlines()
+        return [p.strip() for p in raw if p.strip()]
 
 class FullFetchWorker(QThread):
     finished = pyqtSignal(str, dict, str, list, str, str) # code, quotes_dict, hist_label, history_dicts, interval, period
@@ -105,7 +129,10 @@ class QuotesOnlyWorker(QThread):
                     quotes_dict[lbl] = None
             self.finished.emit(quotes_dict)
         except Exception as e:
-            self.error.emit(str(e))
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                self.error.emit("RATE_LIMIT")
+            else:
+                self.error.emit(str(e))
 
 
 class HistoryWorker(QThread):
@@ -141,6 +168,10 @@ class MarketOverviewTab(QWidget):
         self.auto_timer = QTimer(self)
         self.auto_timer.timeout.connect(self._auto_refresh_tick)
         self.next_refresh_ms = 0
+        
+        # We use a cooldown timer for rate limits
+        self._cooldown_active = False
+        
         self.countdown_timer = QTimer(self)
         self.countdown_timer.timeout.connect(self._update_countdown)
         self.countdown_timer.start(1000)
@@ -182,6 +213,10 @@ class MarketOverviewTab(QWidget):
         r1.addWidget(self.period_cb)
         
         r1.addStretch()
+        
+        self.proxy_btn = QPushButton("Proxies...")
+        self.proxy_btn.clicked.connect(self._open_proxy_dialog)
+        r1.addWidget(self.proxy_btn)
         
         self.fetch_btn = QPushButton("Fetch All")
         self.fetch_btn.clicked.connect(self._fetch_all_async)
@@ -285,6 +320,15 @@ class MarketOverviewTab(QWidget):
     # -----------------------------------------------
     # UI Interactions
     # -----------------------------------------------
+    def _open_proxy_dialog(self):
+        # The underlying CountryMarketScraper has a .proxies list, though it may not be public. We can access it directly.
+        current = getattr(self._scraper, "proxies", [])
+        dlg = ProxySettingsDialog(current, self)
+        if dlg.exec_():
+            new_proxies = dlg.get_proxies()
+            self._scraper.proxies = new_proxies
+            self.status.setText(f"Loaded {len(new_proxies)} proxies.")
+
     def _toggle_json(self):
         self.json_text.setVisible(self.show_json_cb.isChecked())
 
@@ -368,16 +412,26 @@ class MarketOverviewTab(QWidget):
         if self.ar_cb.isChecked() and self.next_refresh_ms > 0:
             self.next_refresh_ms -= 1000
             if self.next_refresh_ms <= 0:
-                self.next_lbl.setText("Fetching...")
+                if self._cooldown_active:
+                    self._cooldown_active = False # Cooldown over
+                    self.status.setText("Cooldown over. Resuming...")
+                    self._schedule_next()
+                else: 
+                    self.next_lbl.setText("Fetching...")
             else:
                 s = self.next_refresh_ms // 1000
                 m = s // 60
                 s = s % 60
-                self.next_lbl.setText(f"{m:02d}:{s:02d}")
+                prefix = "COOLDOWN " if self._cooldown_active else ""
+                self.next_lbl.setText(f"{prefix}{m:02d}:{s:02d}")
 
     def _auto_refresh_tick(self):
         if not self.ar_cb.isChecked() or not self._instruments:
             return
+        if self._cooldown_active:
+            # Let the countdown timer naturally exhaust the cooldown
+            return
+            
         if self._quote_only_inflight or self._fetch_inflight:
             self._schedule_next()
             return
@@ -388,14 +442,28 @@ class MarketOverviewTab(QWidget):
         
         self.qr_worker = QuotesOnlyWorker(self._scraper, code)
         self.qr_worker.finished.connect(self._apply_quotes_update)
-        self.qr_worker.error.connect(lambda e: self.status.setText(f"Auto-refresh error: {e}"))
+        self.qr_worker.error.connect(self._handle_qr_error)
         self.qr_worker.finished.connect(self._reset_qr_inflight)
         self.qr_worker.error.connect(self._reset_qr_inflight)
         self.qr_worker.start()
 
+    def _handle_qr_error(self, e):
+        if e == "RATE_LIMIT":
+            self.status.setText("Yahoo Rate Limit (429)! Cooling down for 3 minutes...")
+            self._cooldown_active = True
+            self.auto_timer.stop()
+            self.next_refresh_ms = 180_000 # 3 minute cooldown
+        else:
+            self.status.setText(f"Auto-refresh error: {e}")
+
     def _reset_qr_inflight(self, *args):
         self._quote_only_inflight = False
-        self._schedule_next()
+        if not self._cooldown_active:
+            self._schedule_next()
+        else:
+            # Once cooldown countdown reaches 0 in _update_countdown, 
+            # it clears _cooldown_active and calls _schedule_next()
+            pass
 
     # -----------------------------------------------
     # Data Fetching

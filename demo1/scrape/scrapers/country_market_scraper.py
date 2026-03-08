@@ -35,6 +35,8 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -578,6 +580,8 @@ class CountryMarketScraper:
         }
 
         def _worker(label: str, symbol: str) -> Tuple[str, Optional[QuoteSnapshot]]:
+            # Adding slight jitter to avoid slamming Yahoo simultaneously
+            time.sleep(random.uniform(0.1, 1.5))
             proxy = self._next_proxy()
             session = _build_session(proxy)
             try:
@@ -653,6 +657,7 @@ class CountryMarketScraper:
         results: Dict[str, List[PriceBar]] = {label: [] for label, _, _ in instruments}
 
         def _worker(label: str, symbol: str) -> Tuple[str, List[PriceBar]]:
+            time.sleep(random.uniform(0.1, 1.5))
             proxy = self._next_proxy()
             bars = _fetch_history_raw(
                 symbol=symbol,
