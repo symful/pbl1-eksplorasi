@@ -14,31 +14,39 @@ Aplikasi memiliki jendela antarmuka Tkinter (PyQt5) modern berdesain latar gelap
 
 ---
 
-## Struktur Folder
+### Struktur Folder
 
 ```text
 demo1/
 ├── desktop_app/
-│   └── main.py                          # Entry point aplikasi GUI (Tkinter)
+│   ├── main.py                          # Entry point aplikasi GUI (PyQt5)
+│   └── ui/                              # Komponen antarmuka grafis
+│       ├── main_window.py               # Window utama pengelola Tab
+│       ├── calendar_tab.py              # Tab Economic Calendar
+│       ├── prices_tab.py                # Tab Single Asset Price
+│       ├── market_tab.py                # Tab Market Overview (Advanced)
+│       └── utils.py                     # Utilitas konversi tipe & string untuk UI
 │
 └── scrape/
-    ├── main.py                          # Orchestrator utama pemrosesan scraping
-    ├── config.py                        # Konfigurasi dan konstanta scraping
+    ├── main.py                          # Orchestrator utama pemrosesan scraping (`run_pipeline`)
+    ├── config.py                        # Konfigurasi konstanta, delay, proxy (.env support), kategori event
     ├── requirements.txt                 # Daftar dependensi Python
     ├── .env.example                     # Template pengaturan environment variables
     │
     ├── models/
-    │   └── economic_event.py            # Model dataclass untuk data EconomicEvent
+    │   └── economic_event.py            # Model `dataclass` untuk data `EconomicEvent` dengan logic sentimen
     │
     ├── scrapers/
-    │   ├── forexfactory_scraper.py      # Module scraping untuk ForexFactory
-    │   ├── investing_scraper.py         # Module scraping untuk Investing.com
-    │   └── yfinance_price_scraper.py    # Module scraping untuk harga (Yahoo Finance)
+    │   ├── forexfactory_scraper.py      # Scraper feed JSON resmi ForexFactory
+    │   ├── investing_scraper.py         # Scraper internal AJAX API Investing.com (support Pagination)
+    │   ├── yfinance_price_scraper.py    # Wrapper `yfinance` dengan handler Rate Limit & Error khusus intraday
+    │   ├── country_market_scraper.py    # `ThreadPoolExecutor` concurrent fetch untuk Top 5 Stocks & Index 10 negara dengan *Proxy Rotation*
+    │   └── finnhub_websocket.py         # Subclass `QThread` khusus koneksi websocket `wss://ws.finnhub.io` real-time
     │
     ├── utils/
-    │   └── helpers.py                   # Utilitas: log, request HTTP, manipulasi waktu, dan ekspor data
+    │   └── helpers.py                   # Utilitas: custom Logger, safe HTTP Requests dengan *Exponential Backoff* Retry, manajemen zona waktu, dan ekspor data (JSON/CSV)
     │
-    └── output/                          # Folder tempat hasil output (JSON/CSV) bermuara
+    └── output/                          # Folder tempat hasil ekstraksi (JSON/CSV) disatukan
 ```
 
 ---
@@ -47,17 +55,20 @@ demo1/
 
 | Komponen | Teknologi | Keterangan |
 |---|---|---|
-| **Bahasa Utama** | Python | Bahasa pemrograman inti yang digunakan |
-| **GUI Framework** | Tkinter | Membangun antarmuka grafis desktop terintegrasi (built-in Python) |
-| **HTTP & Web Parsing** | `requests`, `beautifulsoup4`, `lxml` | Menarik dan memparsing data HTML/JSON dari portal web |
-| **Financial Data API** | `yfinance`, `pandas` | Mengambil dan mengolah data harga historis dan kutipan dari Yahoo Finance |
-| **Data Visualization** | `matplotlib` | Merender grafik pergerakan harga di atas kanvas Tkinter |
+| **Bahasa Utama** | Python 3.8+ | Bahasa backend dan frontend integrasi |
+| **GUI Framework** | PyQt5, `qdarktheme` | Membangun antarmuka desktop modern berlatar gelap |
+| **HTTP Requests & Parsing** | `requests`, `urllib3` (Retry), `bs4` | Ekstraksi sesi, cookie, & parsing DOM HTML API internal Investing |
+| **Model Data** | `dataclasses` | Penggunaan model `EconomicEvent` baku & konversi seragam JSON |
+| **Financial Data API** | `yfinance` | Menarik quotes *fast_info* dan historis pergerakan OHLCV |
+| **Real-time Streaming** | `websocket-client` | Menangkap sinyal raw trade WSS milik Finnhub ke dalam Thread UI |
+| **Concurrency / Threading** | `QThread` (PyQt), `ThreadPoolExecutor` | Multi-threading untuk auto-refresh GUI & Paralel Fetching Yahoo Finance |
+| **Data Visualization** | `pyqtgraph` | Library graphing performant untuk rendering chart candlestick cepat |
 
 ---
 
 ## Arsitektur Aplikasi & Desain Threading
 
-Aplikasi ini menggunakan perpaduan **PyQt5** untuk antarmuka pengguna (GUI) dan arsitektur *multithreading* (`QThread`) untuk memastikan UI tetap responsif (tidak *freeze*) ketika proses *scraping* atau operasi *network* berjalan di latar belakang.
+Aplikasi ini menggunakan perpaduan **PyQt5** untuk antarmuka pengguna (GUI) dan arsitektur *multithreading* (`QThread` & `ThreadPoolExecutor`) untuk memastikan responsivitas tingkat tinggi (mencegah UI *freeze*).
 
 ```text
 ┌─────────────────────────────────────────────────────┐
@@ -73,7 +84,7 @@ Aplikasi ini menggunakan perpaduan **PyQt5** untuk antarmuka pengguna (GUI) dan 
  │   Tab     │   │   Tab     │   │ Overview  │
  └─────────┬─┘   └─────┬─────┘   └─┬─────────┘
            │           │           │ memanggil QThread
-           │ memicu eksekusi       │ (FullFetchWorker, 
+           │ memicu eksekusi       │ (FullFetchWorker, FinnhubWebsocketClient)
  ┌─────────▼───────────▼───────────▼─────────┐
  │                  scrape/                  │
  │       Pipeline Scraping & Processing      │
@@ -81,14 +92,14 @@ Aplikasi ini menggunakan perpaduan **PyQt5** untuk antarmuka pengguna (GUI) dan 
            │           │           │
  ┌─────────▼─┐   ┌─────▼─────┐   ┌─▼─────────┐
  │eco cal API│   │yfinance   │   │Websocket /│
- │(Investing/│   │(Yahoo)    │   │Yahoo API  │
- │ FF)       │   │           │   │           │
+ │(Investing/│   │Top 5      │   │Yahoo API  │
+ │ FF)       │   │Concurrent │   │(finnhub)  │
  └─────────┬─┘   └─────┬─────┘   └─┬─────────┘
            │           │           │
            └──►  output/ (JSON)  ◄─┘
 ```
 
-Setiap Tab mendelegasikan pemanggilan data ke sebuah kelas _Worker_ seperti `CalendarWorker`, `PricesWorker`, atau `FullFetchWorker` dan berkomunikasi melalui Qt *Signals/Slots* (`finished` & `error`).
+Setiap operasi I/O jaringan ditangani asinkron. Tab `Economic Calendar` memakai kombinasi orchestrator `run_pipeline`, sedangkan `Market Overview` menggabungkan `CountryMarketScraper` (berbasis `ThreadPoolExecutor`) dengan sistem rotasi proxy internal, ditambah dukungan `FinnhubWebsocketClient`.
 
 ---
 
@@ -96,41 +107,43 @@ Setiap Tab mendelegasikan pemanggilan data ke sebuah kelas _Worker_ seperti `Cal
 
 ### 1. Tab Economic Calendar (`calendar_tab.py`)
 - **Filter Data Terpadu**: Pengguna bisa menyortir event ekonomi berdasarkan **Mata Uang** (`ALL`, `USD`, `IDR`), **Tingkat Dampak / Impact** (`High`, `Medium`, `Low`), serta jendela hari ke belakang (`Days back`).
-- **Tabel Responsif**: Menampilkan acara ekonomi dengan kolom Tanggal, Waktu, Mata Uang, Dampak, dan Judul. Mendukung seleksi baris (row).
-- **Inspeksi JSON Lagsung**: Panel pratinjau data mentah berformat JSON dari setiap *event* ketika diklik.
+- **Tabel Responsif & Model Terpusat**: Seluruh event direpresentasikan lewat `EconomicEvent` terstandard, memungkinkan komputasi *sentiment* (baik/buruk) otomatis jika data aktual telah terbit.
+- **Inspeksi JSON Langsung**: Panel pratinjau data mentah berformat JSON dari setiap *event* ketika diklik ganda/disorot.
 - **Refresh & Eksekusi Asinkron**: Tombol `Refresh Calendar` menjalankan pengambilan data kalender di latar belakang (`CalendarWorker`).
-- **Export Mandiri**: Tombol `Export JSON` memungkinkan ekspor status kalender di layar ke dalam *file* JSON khusus.
+- **Export Mandiri**: Tombol `Export JSON` memungkinkan ekspor status kalender di layar secara format struktur siap baca.
 
 ### 2. Tab Prices (`prices_tab.py`)
-- **Pemilihan Instrumen**: Memantau aset kustom yang ditetapkan pengguna, cth:`USDIDR`, `IHSG`, `BBCA` (dan penyesuaian interval 1m sampai 3mo, juga periode 5d sampai opsi Max tahun).
-- **Grafik Interaktif QtGraph**: Merender representasi interaktif grafik pergerakan harga komplit dengan Sumbu X berformat tanggal/jam yang bisa di-zoom maupun di-pan.
-- **Tinjauan Historis**: Daftar riwayat nilai OHLCV (Open, High, Low, Close, Volume).
-- **Export Data Harga**: Snapshot yang tersaji termasuk *Quote* saat itu beserta seluruh rentang historis dapat di-export via dialog file `.json`.
+- **Penanganan Aset Tunggal**: Menggunakan `yfinance_price_scraper.py` untuk memeriksa Quote instan (mengutamakan *fast_info* ketimbang *.info* guna lolos dari batas *Rate Limit*) dan history Price Bar komputasi OHLCV penuh.
+- **Grafik Interaktif PyQtGraph**: Format waktu pada absis-x chart disulap menjadi kustomisasi ramah baca.
+- **Tinjauan Historis**: Tabel iterasi riwayat nilai penutupan, volume transaksi hingga *Adjusted Close*.
+- **Pembersihan Logika Interval**: Secara pintar menolak kombinasi periode interval ekstrem, contoh: komputasi timeframe 1 menit untuk jangkauan tahunan akan diturunkan jadi 5 hari (`5d`).
 
 ### 3. Tab Market Overview (`market_tab.py`)
-Tab fitur lanjut (Advanced) untuk memantau ratusan instrumen finansial berdasarkan direktori aset suatu negara.
-- **Country Filter**: Filter aset berdasarkan `US` (Amerika) atau `ID` (Indonesia) untuk mengkurasi daftar Indeks, Obligasi, dan Saham.
-- **Auto-Refresh**: Dapat dijadwalkan secara periodik (30 detik hingga 5 menit) untuk mem-fetch pembaruan _quotes_ tanpa menggangu UI. Mendukung pencegahan limit rate (Exponential Cooldown saat HTTP 429).
-- **Real-Time Websocket**: Integrasi opsional pada aset Amerika dengan masukan API key `Finnhub`. Seluruh perubahan harga akan disorot pada tabel serta memperbarui instan letak titik harga terakhir grafik dalam satuan _milisecond_.
-- **Proxy Management**: Mencegah pemblokiran pengikisan (_scraping blocks_) dari API eksternal dengan kapabilitas konfigurasi Custom HTTP Proxy.
+Tab fitur lanjut untuk pengamatan konstelasi makro.
+- **Country Blueprint**: Menyokong koleksi struktur terdaftar (US, ID, GB, CN, SG dll) yang diset oleh konstanta `COUNTRY_TEMPLATES` di file *country market*.
+- **Auto-Refresh Exponential Cooldown**: Menangani respons penolakan API kode `HTTP 429: Too Many Requests` dari infrastruktur Yahoo dengan cerdas mengundur jeda pemanggilan.
+- **Real-Time Websocket & Proxy Management**: Integrasi ganda. Socket Finnhub mentransmisi harga _intra-second_, sedangkan rotasi `Round-Robin Proxy Pool` menyebarkan laju *throttle limit* I/O HTTP pada yfinance ke server berbeda.
 
 ---
 
 ## Metodologi Scraping
 
-Aplikasi mendapatkan data melalui kombinasi beberapa pendekatan teknis:
+Aplikasi mendapatkan data melalui kombinasi pola agresif dan sopan teknis:
 
 1. **ForexFactory API (`forexfactory_scraper.py`)**: 
-   Menargetkan JSON API resmi (`nfs.faireconomy.media`) untuk langsung mensintesis acara perekonomian Amerika Serikat (USD).
+   Menargetkan JSON feed terstruktur (`ff_calendar_thisweek.json`) untuk langsung mensintesis acara perekonomian AS (Mata Uang `USD` murni, dipetakan hingga zona Region benua).
    
 2. **Investing.com AJAX API (`investing_scraper.py`)**:
-   Melakukan permintaan HTTP awal dengan parsing BeautifulSoup untuk mendapatkan session/cookie, kemudian meminta data AJAX dengan menggunakan parameter negara target (`IDR` / `USD`). Penanganan blokir dihindari dengan merotasi `User-Agent` serta menangani rate limiting melalui *exponential backoff*.
+   Lolos dari blokade Web Scrape dengan cara mendaftarkan diri secara `GET` *Session* (menyerap `cookies` dan `user-agent` otentik) mendahului injeksi internal `POST` berdasar filter negara 5 (US) dan 48 (IDR). Script mendukung *Pagination* mutakhir.
 
-3. **Yahoo Finance Library + Country Scraper**:
-   Data historis harga saham/foreks diambil menggunakan *library* `yfinance` dan komponen kustom (`CountryMarketScraper`) yang menyederhanakan panggilan API Yahoo Finance serta melakukan abstraksi manajemen direktori instrumen negara.
+3. **Retries dan Robust Requests (`helpers.py`)**:
+   Pengiriman diwadahi paket *Session* `urllib3.util.retry.Retry`. Ia bersabar mengulang paket bila peladen membanting *HTTP code* semisal 502/504 (timeout) sembari menjamin pelambatan pengingatan *delay* paksa sebelum setiap `request`.
+   
+4. **Yahoo Finance Library + Country Scraper**:
+   Data terpadu diambil via `yfinance`. `CountryMarketScraper` berfungsi mem-pool kueri ke dalam *threads paralell* bersama sebuah instansiasi `TTL Cached`. Ini melenyapkan lonjakan spam apabila pengguna nekat mengklik tombol refresh secepat munggkin.
 
-4. **Finnhub Websocket Client (`finnhub_websocket.py`)**:
-   Implementasi TCP koneksi berkecepatan tinggi berbasis token otorisasi yang menerima *streaming* data transaksi market aslinya untuk menyulap performa "Real-Time".
+5. **Finnhub Websocket Client (`finnhub_websocket.py`)**:
+   Implementasi koneksi WebSocket `wss://ws.finnhub.io` dikapsulasi menjadi modul latar `QThread`. Memasok balikan *Trade Price* asinkron tanpa memonopoli komputasi CPU GUI utama.
 
 ---
 
