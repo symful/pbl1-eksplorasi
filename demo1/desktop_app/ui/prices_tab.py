@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import pyqtgraph as pg
 
 from scrape.scrapers.yfinance_price_scraper import YahooFinancePriceScraper
-from desktop_app.ui.utils import _utc_now_rfc3339, _pretty_json
+from desktop_app.ui.utils import _utc_now_rfc3339, _pretty_json, _format_dt_str
 
 class PricesWorker(QThread):
     finished = pyqtSignal(dict, list, str, str, str) # quote, history, label, symbol, msg
@@ -191,7 +191,7 @@ class PricesTab(QWidget):
         
         for i, r in enumerate(show_rows):
             dt_s = str(r.get("datetime_utc", ""))
-            self.table.setItem(i, 0, QTableWidgetItem(dt_s))
+            self.table.setItem(i, 0, QTableWidgetItem(_format_dt_str(dt_s)))
             self.table.setItem(i, 1, QTableWidgetItem(str(r.get("open", ""))))
             self.table.setItem(i, 2, QTableWidgetItem(str(r.get("high", ""))))
             self.table.setItem(i, 3, QTableWidgetItem(str(r.get("low", ""))))
@@ -200,10 +200,18 @@ class PricesTab(QWidget):
             
             if dt_s and r.get("close") is not None:
                 try:
-                    dt = datetime.fromisoformat(dt_s.replace("Z", "+00:00")).astimezone(timezone.utc)
+                    # More robust parsing for pyqtgraph timestamp conversion
+                    if dt_s.endswith("Z"):
+                        dt_s = dt_s[:-1] + "+00:00"
+                    
+                    # Split fractional seconds manually if fromisoformat fails
+                    dt = datetime.fromisoformat(dt_s)
+                    if not dt.tzinfo:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                        
                     x_data.append(dt.timestamp())
                     y_data.append(float(r.get("close")))
-                except:
+                except Exception as e:
                     pass
 
         self.plot_widget.clear()

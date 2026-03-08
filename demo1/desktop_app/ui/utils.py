@@ -15,6 +15,14 @@ def _safe_int(s: str, default: int) -> int:
 def _pretty_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
+def _format_dt_str(iso_str: str) -> str:
+    if not iso_str: return ""
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M:%S " + dt.tzname())
+    except:
+        return str(iso_str)
+
 def _event_to_dict(e: Any) -> Dict[str, Any]:
     """Convert EconomicEvent to a dict safe for JSON."""
     if hasattr(e, "to_dict"):

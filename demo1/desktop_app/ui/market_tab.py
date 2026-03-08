@@ -8,14 +8,15 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
     QCheckBox, QPushButton, QTableWidget, 
     QTableWidgetItem, QHeaderView, QTextEdit, QMessageBox,
-    QFileDialog, QSplitter, QDialog, QDialogButtonBox
+    QFileDialog, QSplitter, QDialog, QDialogButtonBox, QLineEdit
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
 import pyqtgraph as pg
 
 from scrape.scrapers.country_market_scraper import CountryMarketScraper, get_country_display_list, parse_country_code, format_price
-from desktop_app.ui.utils import _utc_now_rfc3339, _pretty_json
+from scrape.scrapers.finnhub_websocket import FinnhubWebsocketClient
+from desktop_app.ui.utils import _utc_now_rfc3339, _pretty_json, _format_dt_str
 from desktop_app.ui.prices_tab import TimeAxisItem
 
 # Interval and period options
@@ -165,11 +166,14 @@ class MarketOverviewTab(QWidget):
         self._fetch_inflight = False
         self._quote_only_inflight = False
         
+        self.ws_thread = None
+        
         self.auto_timer = QTimer(self)
         self.auto_timer.timeout.connect(self._auto_refresh_tick)
         self.next_refresh_ms = 0
         
-        # We use a cooldown timer for rate limits
+        # Exponential backoff base for rate limits (in ms)
+        self._cooldown_ms = 120_000 
         self._cooldown_active = False
         
         self.countdown_timer = QTimer(self)
@@ -217,6 +221,18 @@ class MarketOverviewTab(QWidget):
         self.proxy_btn = QPushButton("Proxies...")
         self.proxy_btn.clicked.connect(self._open_proxy_dialog)
         r1.addWidget(self.proxy_btn)
+        
+        # Real-Time Setting
+        r1.addWidget(QLabel("Finnhub WS Key:"))
+        self.finnhub_key_input = QLineEdit()
+        self.finnhub_key_input.setPlaceholderText("Paste API Key...")
+        self.finnhub_key_input.setFixedWidth(120)
+        self.finnhub_key_input.setEchoMode(QLineEdit.Password)
+        r1.addWidget(self.finnhub_key_input)
+        
+        self.ws_status = QLabel("● WSS: Off")
+        self.ws_status.setStyleSheet("color: #6c7086; font-weight: bold;")
+        r1.addWidget(self.ws_status)
         
         self.fetch_btn = QPushButton("Fetch All")
         self.fetch_btn.clicked.connect(self._fetch_all_async)
@@ -337,6 +353,26 @@ class MarketOverviewTab(QWidget):
         instruments = self._scraper.get_instruments(code)
         self._instruments = instruments
         
+        # Stop existing websocket
+        if self.ws_thread and self.ws_thread.isRunning():
+            self.ws_thread.stop()
+            self.ws_thread.wait()
+            self.ws_status.setText("● WSS: Off")
+            self.ws_status.setStyleSheet("color: #6c7086; font-weight: bold;")
+            
+        # If US, attempt to connect to Finnhub for real-time
+        if code == "US" and self.finnhub_key_input.text().strip():
+            api_key = self.finnhub_key_input.text().strip()
+            # Finnhub requires plain symbols: AAPL, MSFT, etc.
+            # Convert Yahoo index ^GSPC to something Finnhub likes, or filter it out. 
+            # We'll filter out the index for the free tier and just stream the stocks.
+            stocks = [sym for lbl, sym, itype in instruments if itype == "stock"]
+            
+            self.ws_thread = FinnhubWebsocketClient(api_key, stocks)
+            self.ws_thread.trade_received.connect(self._on_ws_trade)
+            self.ws_thread.status_changed.connect(self._on_ws_status)
+            self.ws_thread.start()
+        
         self.chart_inst_cb.clear()
         labels = [lbl for lbl, _, _ in instruments]
         if labels:
@@ -414,7 +450,7 @@ class MarketOverviewTab(QWidget):
             if self.next_refresh_ms <= 0:
                 if self._cooldown_active:
                     self._cooldown_active = False # Cooldown over
-                    self.status.setText("Cooldown over. Resuming...")
+                    self.status.setText(f"Cooldown over. Resuming backoff={self._cooldown_ms//1000}s.")
                     self._schedule_next()
                 else: 
                     self.next_lbl.setText("Fetching...")
@@ -449,10 +485,13 @@ class MarketOverviewTab(QWidget):
 
     def _handle_qr_error(self, e):
         if e == "RATE_LIMIT":
-            self.status.setText("Yahoo Rate Limit (429)! Cooling down for 3 minutes...")
+            mins = self._cooldown_ms // 60_000
+            self.status.setText(f"Yahoo Rate Limit (429)! Exponential Cooldown: {mins} mins...")
             self._cooldown_active = True
             self.auto_timer.stop()
-            self.next_refresh_ms = 180_000 # 3 minute cooldown
+            self.next_refresh_ms = self._cooldown_ms
+            # Double backoff for next time, max 16 mins
+            self._cooldown_ms = min(self._cooldown_ms * 2, 960_000) 
         else:
             self.status.setText(f"Auto-refresh error: {e}")
 
@@ -510,6 +549,8 @@ class MarketOverviewTab(QWidget):
     def _apply_full_fetch(self, code, quotes_dict, hist_label, history_dicts, interval, period):
         self._fetch_inflight = False
         self.fetch_btn.setEnabled(True)
+        # Reset cooldown on successful full fetch
+        self._cooldown_ms = 120_000 
         self._quotes = quotes_dict
         if hist_label:
             self._histories[hist_label] = history_dicts
@@ -573,7 +614,7 @@ class MarketOverviewTab(QWidget):
         x_data, y_data = [], []
         for i, r in enumerate(show):
             dt_s = r.get("datetime_utc", "")
-            self.hist_tv.setItem(i, 0, QTableWidgetItem(dt_s))
+            self.hist_tv.setItem(i, 0, QTableWidgetItem(_format_dt_str(dt_s)))
             self.hist_tv.setItem(i, 1, QTableWidgetItem(str(r.get("open", ""))))
             self.hist_tv.setItem(i, 2, QTableWidgetItem(str(r.get("high", ""))))
             self.hist_tv.setItem(i, 3, QTableWidgetItem(str(r.get("low", ""))))
@@ -582,7 +623,13 @@ class MarketOverviewTab(QWidget):
             
             if dt_s and r.get("close") is not None:
                 try:
-                    dt = datetime.fromisoformat(dt_s.replace("Z", "+00:00")).astimezone(timezone.utc)
+                    if dt_s.endswith("Z"):
+                        dt_s = dt_s[:-1] + "+00:00"
+                    
+                    dt = datetime.fromisoformat(dt_s)
+                    if not dt.tzinfo:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                        
                     x_data.append(dt.timestamp())
                     y_data.append(float(r.get("close")))
                 except: pass
@@ -618,3 +665,66 @@ class MarketOverviewTab(QWidget):
             QMessageBox.information(self, "Export", f"Saved:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))
+
+    # -----------------------------------------------
+    # WebSocket Real-Time Handling
+    # -----------------------------------------------
+    def _on_ws_status(self, msg):
+        if "Connected" in msg:
+            self.ws_status.setText("● WSS: Live")
+            self.ws_status.setStyleSheet("color: #a6e3a1; font-weight: bold;") # Green
+        elif "Error" in msg or "Closed" in msg:
+            self.ws_status.setText("● WSS: Error/Closed")
+            self.ws_status.setStyleSheet("color: #f38ba8; font-weight: bold;") # Red
+
+    def _on_ws_trade(self, trade):
+        # Format: {"symbol": "AAPL", "p": 150.25, "v": 100, "t": 1600000000}
+        sym = trade.get("symbol")
+        price = trade.get("p")
+        if not sym or price is None: return
+        
+        # 1. Update Table Row
+        lbl = None
+        for i, (label, symbol, itype) in enumerate(self._instruments):
+            # Finnhub drops suffix for US, Yahoo uses plain AAPL anyway, so direct match usually works
+            if symbol == sym:
+                lbl = label
+                
+                # Fetch existing quote to calculate real-time change
+                q = self._quotes.get(label)
+                if q and q.get("previous_close"):
+                    prev = q["previous_close"]
+                    chg = price - prev
+                    chg_pct = (chg / prev) * 100.0
+                    
+                    item_last = QTableWidgetItem(format_price(price))
+                    item_last.setForeground(QColor("#f9e2af")) # Yellow flash for updates
+                    self.quote_tv.setItem(i, 4, item_last)
+                    
+                    item_chg = QTableWidgetItem(f"{chg:+.4g}")
+                    item_chgp = QTableWidgetItem(f"{chg_pct:+.2f}%")
+                    
+                    for idx, x in enumerate([item_chg, item_chgp]):
+                        if chg > 0: x.setForeground(QColor("#a6e3a1"))
+                        elif chg < 0: x.setForeground(QColor("#f38ba8"))
+                        self.quote_tv.setItem(i, 5 + idx, x)
+                        
+                    # Inject back into dict for JSON export accuracy
+                    q["last_price"] = price
+                    q["change"] = chg
+                    q["change_percent"] = chg_pct
+                    self._quotes[label] = q
+                    break
+                    
+        # 2. Update existing chart if it's currently selected
+        if lbl and self._selected_label == lbl and self.chart:
+            # Append to last bar in pyqtgraph without redrawing everything
+            bars = self._histories.get(lbl)
+            if bars:
+                last_bar = bars[-1]
+                # Update close price natively
+                last_bar["close"] = price
+                if price > last_bar["high"]: last_bar["high"] = price
+                if price < last_bar["low"]: last_bar["low"] = price
+                # Re-render chart fast
+                self._update_chart_and_hist_table(lbl)

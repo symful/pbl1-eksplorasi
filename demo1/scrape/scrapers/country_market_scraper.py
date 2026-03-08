@@ -497,8 +497,30 @@ class CountryMarketScraper:
         self._proxy_lock: threading.Lock = threading.Lock()
         self.max_workers: int = max(1, max_workers)
 
+        # In-Memory TTLCache (Time-To-Live)
+        # Structure: { "quote:symbol": (timestamp, data), "history:symbol:interval:period": (timestamp, data) }
+        self._cache: Dict[str, Tuple[float, Any]] = {}
+        self._cache_ttl_seconds = 15.0 # Cache quotes/histories for 15 seconds locally
+        self._cache_lock: threading.Lock = threading.Lock()
+
         # Shared YahooFinancePriceScraper (no proxy) for export helpers
         self._base_scraper = YahooFinancePriceScraper(output_dir=self.output_dir)
+
+    def _get_cached(self, key: str) -> Optional[Any]:
+        with self._cache_lock:
+            if key in self._cache:
+                timestamp, data = self._cache[key]
+                if time.time() - timestamp < self._cache_ttl_seconds:
+                    return data
+                else:
+                    del self._cache[key]
+        return None
+
+    def _set_cache(self, key: str, data: Any):
+        if data is None or (isinstance(data, list) and len(data) == 0):
+            return # Don't cache failures
+        with self._cache_lock:
+            self._cache[key] = (time.time(), data)
 
     # ------------------------------------------------------------------
     # Proxy rotation
@@ -580,6 +602,11 @@ class CountryMarketScraper:
         }
 
         def _worker(label: str, symbol: str) -> Tuple[str, Optional[QuoteSnapshot]]:
+            cache_key = f"quote:{symbol}"
+            cached = self._get_cached(cache_key)
+            if cached:
+                return label, cached
+                
             # Adding slight jitter to avoid slamming Yahoo simultaneously
             time.sleep(random.uniform(0.1, 1.5))
             proxy = self._next_proxy()
@@ -605,11 +632,18 @@ class CountryMarketScraper:
         return results
 
     def fetch_quote(self, symbol: str, ticker_label: str) -> Optional[QuoteSnapshot]:
-        """Fetch a single quote snapshot (with proxy rotation)."""
+        """Fetch a single quote snapshot (with proxy rotation & TTL cache)."""
+        cache_key = f"quote:{symbol}"
+        cached = self._get_cached(cache_key)
+        if cached:
+            return cached
+            
         proxy = self._next_proxy()
         session = _build_session(proxy)
         try:
-            return _fetch_quote_raw(symbol, ticker_label, session=session)
+            q = _fetch_quote_raw(symbol, ticker_label, session=session)
+            self._set_cache(cache_key, q)
+            return q
         except Exception:
             return None
 
@@ -628,15 +662,22 @@ class CountryMarketScraper:
         Fetch OHLCV history bars.  Proxy rotation is applied.
         Returns [] on rate-limit / known Yahoo restrictions.
         """
+        cache_key = f"history:{symbol}:{interval}:{period}"
+        cached = self._get_cached(cache_key)
+        if cached:
+            return cached
+            
         proxy = self._next_proxy()
         try:
-            return _fetch_history_raw(
+            bars = _fetch_history_raw(
                 symbol=symbol,
                 ticker_label=ticker_label,
                 interval=interval,
                 period=period,
                 proxy_url=proxy,
             )
+            self._set_cache(cache_key, bars)
+            return bars
         except Exception:
             return []
 
@@ -657,6 +698,11 @@ class CountryMarketScraper:
         results: Dict[str, List[PriceBar]] = {label: [] for label, _, _ in instruments}
 
         def _worker(label: str, symbol: str) -> Tuple[str, List[PriceBar]]:
+            cache_key = f"history:{symbol}:{interval}:{period}"
+            cached = self._get_cached(cache_key)
+            if cached:
+                return label, cached
+                
             time.sleep(random.uniform(0.1, 1.5))
             proxy = self._next_proxy()
             bars = _fetch_history_raw(

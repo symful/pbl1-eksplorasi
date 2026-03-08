@@ -133,7 +133,10 @@ def _to_float(v: Any) -> Optional[float]:
 def _is_rate_limit_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return (
-        ("too many requests" in msg) or ("rate limit" in msg) or ("ratelimited" in msg)
+        ("too many requests" in msg) or 
+        ("rate limit" in msg) or 
+        ("ratelimited" in msg) or
+        ("yfratelimiterror" in msg)
     )
 
 
@@ -288,23 +291,29 @@ def _iter_history_rows(history_obj: Any) -> Iterable[Tuple[Any, Dict[str, Any]]]
 
         def gen() -> Iterable[Tuple[Any, Dict[str, Any]]]:
             for idx, row in it():
+                row_dict = {}
                 # row could be Series-like; convert to dict best-effort
-                if isinstance(row, dict):
-                    yield idx, row
-                else:
-                    to_dict = getattr(row, "to_dict", None)
-                    if callable(to_dict):
-                        try:
-                            yield idx, dict(to_dict())
-                            continue
-                        except Exception:
-                            pass
-                    # fallback: try dict(row)
+                to_dict = getattr(row, "to_dict", None)
+                if callable(to_dict):
                     try:
-                        yield idx, dict(row)
+                        row_dict = dict(to_dict())
                     except Exception:
-                        # worst-case: nothing usable
-                        yield idx, {}
+                        pass
+                else:
+                    try:
+                        row_dict = dict(row)
+                    except Exception:
+                        pass
+                
+                # Flatten multi-index tuple keys like ('Close', 'AAPL') -> 'Close'
+                flat_dict = {}
+                for k, v in row_dict.items():
+                    if isinstance(k, tuple) and len(k) > 0:
+                        flat_dict[str(k[0])] = v
+                    else:
+                        flat_dict[str(k)] = v
+                
+                yield idx, flat_dict
 
         return gen()
 
@@ -312,8 +321,34 @@ def _iter_history_rows(history_obj: Any) -> Iterable[Tuple[Any, Dict[str, Any]]]
     if isinstance(history_obj, dict):
 
         def gen2() -> Iterable[Tuple[Any, Dict[str, Any]]]:
-            for k, v in history_obj.items():
-                yield k, v if isinstance(v, dict) else {}
+            # yfinance 1.2 returns nested dicts like {'Close': {'idx1': val1}, 'Open': ...}
+            # Or {'Close': {'AAPL': {'idx': val}}} if multi-ticker. We need to pivot to rows.
+            # Strategy: gather all unique timestamps first
+            timestamps = set()
+            for col_name, inner in history_obj.items():
+                if isinstance(inner, dict):
+                    # Multi-ticker Check: {'AAPL': {'idx': val}}
+                    for k, v in inner.items():
+                        if isinstance(v, dict):
+                            timestamps.update(v.keys())
+                        else:
+                            timestamps.add(k)
+            
+            # Reconstruct Rows
+            for ts in sorted(list(timestamps), key=lambda x: str(x)):
+                row_dict = {}
+                for col_name, inner in history_obj.items():
+                    if isinstance(inner, dict):
+                         # Try multi-ticker first
+                         found = False
+                         for tk, v in inner.items():
+                             if isinstance(v, dict) and ts in v:
+                                  row_dict[col_name] = v[ts]
+                                  found = True
+                         # Single ticker fallback
+                         if not found and ts in inner:
+                             row_dict[col_name] = inner[ts]
+                yield ts, row_dict
 
         return gen2()
 
@@ -544,17 +579,15 @@ class YahooFinancePriceScraper:
                 dl_kwargs["proxy"] = self.proxy
             data = yf.download(**dl_kwargs)
         except Exception as exc:
-            # Known issues: rate limit or unsupported intraday range
-            if (
-                _is_rate_limit_error(exc)
-                or _is_intraday_granularity_limit_error(exc)
-                or _is_no_price_data_error(exc)
-            ):
+            if _is_rate_limit_error(exc) or _is_no_price_data_error(exc):
                 return []
+            
+            # yfinance 1.2.0 specific checks (string parsing from standard Exception)
+            if "Too Many Requests" in str(exc) or "Rate limited" in str(exc):
+                return []
+                
             raise
 
-        # Some yfinance failures return an "empty" frame without raising.
-        # We treat it as no-data and let UI decide messaging.
         if data is None:
             return []
 

@@ -74,4 +74,35 @@ print(result.events)
 
 **Rate Limits & Throttle Behavior**:
 - **Investing.com**: Employs Cloudflare browser checks. The scraper uses standard `requests` with randomized User-Agent headers natively. Since the Economic Calendar updates roughly precisely on schedules (not second-by-second), it is fetched manually in the UI rather than via a looping background timer.
-- **ForexFactory**: Very lenient rate limits for the calendar, but highly dependent on the `User-Agent`. 
+- **ForexFactory**: Very lenient rate limits for the calendar, but highly dependent on the `User-Agent`.
+
+---
+
+## 4. Finnhub Real-Time WebSocket (Free Tier)
+
+**Description**: Provides true millisecond real-time streaming of US stock trades directly into the UI via the `websocket-client` library. This allows you to view live changing numbers for the `US` market without hitting Yahoo Finance limits.
+
+**Usage**:
+```python
+from scrape.scrapers.finnhub_websocket import FinnhubWebsocketClient
+
+# Create the websocket thread
+ws = FinnhubWebsocketClient(api_key="your_finnhub_key", symbols=["AAPL", "MSFT"])
+ws.trade_received.connect(lambda trade: print(trade))
+ws.start()
+```
+
+**Underlying API**: Interacts with `wss://ws.finnhub.io?token={api_key}`.
+**Rate Limits & Throttle Behavior**:
+- **Connection Limit**: Free tier supports a few concurrent connections.
+- **Message Limit**: The free tier restricts messages to roughly 50 trades per second.
+- **Handling**: The `FinnhubWebsocketClient` receives JSON payloads and unpacks them into native Python dictionaries, which are safely passed to the GUI layer using a `pyqtSignal`. 
+
+---
+
+## 5. Caching Layer
+
+**Description**: The `CountryMarketScraper` now features an internal In-Memory Time-To-Live (TTL) cache.
+- **Mechanism**: Every dictionary/object fetched is saved natively with a `time.time()` stamp.
+- **Threshold**: 15 seconds.
+- **Purpose**: If a user clicks the "Fetch All" button 10 times in 3 seconds, or the auto-refresh fires while a manual fetch is ongoing, the cache intercepts the duplicate HTTP requests and returns the stored payload instantly. This provides a fast, snappy UI while drastically cutting down on arbitrary 429 Rate Limits from API providers. 

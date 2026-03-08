@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from scrape.main import run_pipeline
-from desktop_app.ui.utils import _safe_int, _event_to_dict, _pretty_json
+from desktop_app.ui.utils import _safe_int, _event_to_dict, _pretty_json, _format_dt_str
 
 class CalendarWorker(QThread):
     finished = pyqtSignal(list, str)
@@ -147,7 +147,11 @@ class CalendarTab(QWidget):
         
         self.table.setRowCount(len(events))
         for i, e in enumerate(events):
-            self.table.setItem(i, 0, QTableWidgetItem(str(e.get("date", ""))))
+            # Calendar only returns dates or partial times natively (e.g. '2025-03-08' not full iso), 
+            # so we check if it looks like an ISO string first or just print it natively.
+            dt_raw = e.get("date", "")
+            d_str = _format_dt_str(dt_raw) if "T" in dt_raw else str(dt_raw)
+            self.table.setItem(i, 0, QTableWidgetItem(d_str))
             self.table.setItem(i, 1, QTableWidgetItem(str(e.get("time", ""))))
             self.table.setItem(i, 2, QTableWidgetItem(str(e.get("currency", ""))))
             self.table.setItem(i, 3, QTableWidgetItem(str(e.get("impact", ""))))
