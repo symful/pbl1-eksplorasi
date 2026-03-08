@@ -407,7 +407,6 @@ def _fetch_history_raw(
             period=use_period,
             auto_adjust=False,
             progress=False,
-            group_by="column",
             threads=False,
         )
         if proxy_url:

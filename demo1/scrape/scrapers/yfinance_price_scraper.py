@@ -572,7 +572,6 @@ class YahooFinancePriceScraper:
                 end=end,
                 auto_adjust=auto_adjust,
                 progress=False,
-                group_by="column",
                 threads=False,
             )
             if self.proxy:
