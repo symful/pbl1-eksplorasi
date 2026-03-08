@@ -7,8 +7,10 @@ Aplikasi desktop berbasis **Python (Tkinter)** yang terintegrasi dengan pipeline
 ## Tampilan Aplikasi
 
 *(Tambahkan screenshot aplikasi di sini jika ada)*
+Aplikasi memiliki jendela antarmuka Tkinter (PyQt5) modern berdesain latar gelap (Dark Theme) dengan pembagian tab fungsional:
 - **Tab Economic Calendar**: Menampilkan tabel event ekonomi beserta detail JSON saat baris (row) diklik.
-- **Tab Prices**: Menampilkan grafik harga (line close chart), tabel historis OHLCV (Open, High, Low, Close, Volume), dan snapshot quote JSON.
+- **Tab Prices**: Menampilkan grafik harga (line close chart), tabel historis OHLCV (Open, High, Low, Close, Volume), dan snapshot quote JSON untuk instrumen spesifik.
+- **Tab Market Overview**: Memantau banyak instrumen finansial berdasarkan negara (Indeks, Saham, Futures, Forex, Bond) secara *real-time* via Finnhub Websocket atau *Auto-Refresh* berkala dengan API. Menampilkan tabel quote *live* dan grafik historis interaktif dengan kapabilitas *export* yang komprehensif.
 
 ---
 
@@ -53,51 +55,64 @@ demo1/
 
 ---
 
-## Arsitektur Aplikasi
+## Arsitektur Aplikasi & Desain Threading
+
+Aplikasi ini menggunakan perpaduan **PyQt5** untuk antarmuka pengguna (GUI) dan arsitektur *multithreading* (`QThread`) untuk memastikan UI tetap responsif (tidak *freeze*) ketika proses *scraping* atau operasi *network* berjalan di latar belakang.
 
 ```text
 ┌─────────────────────────────────────────────────────┐
 │                 desktop_app/main.py                 │
-│              Tkinter GUI (App Desktop)              │
+│              PyQt5 GUI (App Desktop)                │
+│                 (Main UI Thread)                    │
 └──────────────────────┬──────────────────────────────┘
                        │
-           ┌───────────┴───────────┐
-           │                       │
- ┌─────────▼─────────┐   ┌─────────▼─────────┐
- │ Tab: Eco Calendar │   │    Tab: Prices    │
- └─────────┬─────────┘   └─────────┬─────────┘
-           │                       │ memanggil ulang data
-           │ memicu eksekusi       │
- ┌─────────▼───────────────────────▼─────────┐
+           ┌───────────┼───────────┐
+           │           │           │
+ ┌─────────▼─┐   ┌─────▼─────┐   ┌─▼─────────┐
+ │ Eco Cal.  │   │  Prices   │   │  Market   │
+ │   Tab     │   │   Tab     │   │ Overview  │
+ └─────────┬─┘   └─────┬─────┘   └─┬─────────┘
+           │           │           │ memanggil QThread
+           │ memicu eksekusi       │ (FullFetchWorker, 
+ ┌─────────▼───────────▼───────────▼─────────┐
  │                  scrape/                  │
  │       Pipeline Scraping & Processing      │
- └─────────┬───────────────────────┬─────────┘
-           │                       │
- ┌─────────▼─────────┐   ┌─────────▼─────────┐
- │  Kalender Ekonomi │   │   Harga Finansial │
- │ (ForexFactory,    │   │ (Yahoo Finance)   │
- │  Investing.com)   │   │                   │
- └─────────┬─────────┘   └─────────┬─────────┘
-           │                       │
+ └─────────┬───────────┬───────────┬─────────┘
+           │           │           │
+ ┌─────────▼─┐   ┌─────▼─────┐   ┌─▼─────────┐
+ │eco cal API│   │yfinance   │   │Websocket /│
+ │(Investing/│   │(Yahoo)    │   │Yahoo API  │
+ │ FF)       │   │           │   │           │
+ └─────────┬─┘   └─────┬─────┘   └─┬─────────┘
+           │           │           │
            └──►  output/ (JSON)  ◄─┘
 ```
 
+Setiap Tab mendelegasikan pemanggilan data ke sebuah kelas _Worker_ seperti `CalendarWorker`, `PricesWorker`, atau `FullFetchWorker` dan berkomunikasi melalui Qt *Signals/Slots* (`finished` & `error`).
+
 ---
 
-## Fitur-Fitur Aplikasi
+## Fitur-Fitur Aplikasi Detil
 
-### 1. Tab Economic Calendar
-- **Filter Data Terpadu**: Pengguna bisa menyortir event ekonomi berdasarkan **Mata Uang** (`ALL`, `USD`, `IDR`), **Tingkat Dampak / Impact** (`High`, `Medium`, `Low`), serta jendela waktu (jumlah hari ke depan/belakang).
-- **Refresh & Eksekusi Pipeline**: Tombol `Refresh Calendar` menjalankan engine kalender di latar belakang lalu memperbarui data di tabel.
-- **Export Mandiri**: Tombol `Export JSON` memungkinkan pengguna menyimpan event yang tengah tampil ke file JSON pilihan secara manual.
-- **Auto-Save Output**: Selama refreshing, data pipeline secara otomatis disimpan ke direktori `scrape/output/` agar bisa diakses untuk olah data mandiri (misal: `economic_calendar_usd.json`).
+### 1. Tab Economic Calendar (`calendar_tab.py`)
+- **Filter Data Terpadu**: Pengguna bisa menyortir event ekonomi berdasarkan **Mata Uang** (`ALL`, `USD`, `IDR`), **Tingkat Dampak / Impact** (`High`, `Medium`, `Low`), serta jendela hari ke belakang (`Days back`).
+- **Tabel Responsif**: Menampilkan acara ekonomi dengan kolom Tanggal, Waktu, Mata Uang, Dampak, dan Judul. Mendukung seleksi baris (row).
+- **Inspeksi JSON Lagsung**: Panel pratinjau data mentah berformat JSON dari setiap *event* ketika diklik.
+- **Refresh & Eksekusi Asinkron**: Tombol `Refresh Calendar` menjalankan pengambilan data kalender di latar belakang (`CalendarWorker`).
+- **Export Mandiri**: Tombol `Export JSON` memungkinkan ekspor status kalender di layar ke dalam *file* JSON khusus.
 
-### 2. Tab Prices
-- **Pemilihan Instrumen**: Memantau aset yang ditetapkan pengguna seperti `USDIDR` (`IDR=X`), `IHSG` (`^JKSE`), dan `BBCA` (`BBCA.JK`).
-- **Kostumisasi Interval & Rentang Waktu**: Dapat menarik histori dalam rentang seperti `1d`, `3mo`, dll. Mendukung *start/end date* spesifik.
-- **Visualisasi Dinamis**: Menghasilkan matplotlib chart berisikan harga grafik *Close* langsung di dalam jendela Tkinter.
-- **Tinjauan Historis**: Daftar riwayat nilai OHLCV (Open, High, Low, Close, Volume) ditampilkan dalam bentuk tabel.
-- **Export Data Harga**: Tombol `Export JSON` untuk mengeluarkan snapshot historis dan kutipan harga yang sedang diamati.
+### 2. Tab Prices (`prices_tab.py`)
+- **Pemilihan Instrumen**: Memantau aset kustom yang ditetapkan pengguna, cth:`USDIDR`, `IHSG`, `BBCA` (dan penyesuaian interval 1m sampai 3mo, juga periode 5d sampai opsi Max tahun).
+- **Grafik Interaktif QtGraph**: Merender representasi interaktif grafik pergerakan harga komplit dengan Sumbu X berformat tanggal/jam yang bisa di-zoom maupun di-pan.
+- **Tinjauan Historis**: Daftar riwayat nilai OHLCV (Open, High, Low, Close, Volume).
+- **Export Data Harga**: Snapshot yang tersaji termasuk *Quote* saat itu beserta seluruh rentang historis dapat di-export via dialog file `.json`.
+
+### 3. Tab Market Overview (`market_tab.py`)
+Tab fitur lanjut (Advanced) untuk memantau ratusan instrumen finansial berdasarkan direktori aset suatu negara.
+- **Country Filter**: Filter aset berdasarkan `US` (Amerika) atau `ID` (Indonesia) untuk mengkurasi daftar Indeks, Obligasi, dan Saham.
+- **Auto-Refresh**: Dapat dijadwalkan secara periodik (30 detik hingga 5 menit) untuk mem-fetch pembaruan _quotes_ tanpa menggangu UI. Mendukung pencegahan limit rate (Exponential Cooldown saat HTTP 429).
+- **Real-Time Websocket**: Integrasi opsional pada aset Amerika dengan masukan API key `Finnhub`. Seluruh perubahan harga akan disorot pada tabel serta memperbarui instan letak titik harga terakhir grafik dalam satuan _milisecond_.
+- **Proxy Management**: Mencegah pemblokiran pengikisan (_scraping blocks_) dari API eksternal dengan kapabilitas konfigurasi Custom HTTP Proxy.
 
 ---
 
@@ -111,8 +126,11 @@ Aplikasi mendapatkan data melalui kombinasi beberapa pendekatan teknis:
 2. **Investing.com AJAX API (`investing_scraper.py`)**:
    Melakukan permintaan HTTP awal dengan parsing BeautifulSoup untuk mendapatkan session/cookie, kemudian meminta data AJAX dengan menggunakan parameter negara target (`IDR` / `USD`). Penanganan blokir dihindari dengan merotasi `User-Agent` serta menangani rate limiting melalui *exponential backoff*.
 
-3. **Yahoo Finance Library (`yfinance_price_scraper.py`)**:
-   Data historis harga saham/foreks diambil menggunakan lib `yfinance` yang menyederhanakan call API Yahoo secara efisien dan menghasilkan wujud DataFrame `pandas`.
+3. **Yahoo Finance Library + Country Scraper**:
+   Data historis harga saham/foreks diambil menggunakan *library* `yfinance` dan komponen kustom (`CountryMarketScraper`) yang menyederhanakan panggilan API Yahoo Finance serta melakukan abstraksi manajemen direktori instrumen negara.
+
+4. **Finnhub Websocket Client (`finnhub_websocket.py`)**:
+   Implementasi TCP koneksi berkecepatan tinggi berbasis token otorisasi yang menerima *streaming* data transaksi market aslinya untuk menyulap performa "Real-Time".
 
 ---
 
@@ -135,7 +153,7 @@ Proses scraping akan menghasilkan beberapa variasi output file secara otomatis d
 
 ### Prasyarat Asar
 - Python 3.8 atau lebih baru.
-- Dukungan instalasi paket `tkinter` (apabila pengguna Linux, mungkin membutuhkan eksekusi `sudo apt-get install python3-tk`).
+- Aplikasi menggunakan framework antarmuka `PyQt5`, jadi tak memerlukan dependensi `tkinter` bawaan sistem operasi.
 
 ### 1. Ekstraksi Proyek dan Pengaturan Virtual Environment
 Disarankan memakai *Virtual Environment* demi menjaga dependensi sistem utama.
@@ -146,7 +164,7 @@ cd demo1/scrape
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-pip install matplotlib
+# Paket pip pendukung UI telah tercakup: PyQt5, pyqtgraph
 ```
 
 **Windows (PowerShell):**
@@ -155,7 +173,6 @@ cd demo1\scrape
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-pip install matplotlib
 ```
 
 ### 2. Memulai Program / Entry Point
@@ -173,13 +190,15 @@ cd ..\desktop_app
 python main.py
 ```
 
-### 3. Pengoperasian Desktop App
-1. Sesudah aplikasi terbuka, pada form **Economic Calendar**, mulailah dengan menentukan filter (cth: Currency: `USD`, Impact: `High`) lalu klik **Refresh Calendar**.
-2. Berpindahlah ke bagian **Prices**, ubah Instrumen (cth: `BBCA`), atur interpal (*Interval*) ke `1d`, dan *Period* ke `3mo`, kemudian tekan **Refresh Prices** untuk menampilkan grafis *chart* `matplotlib`.
+3. **Pengoperasian Desktop App**
+1. Setelah GUI termuat, Anda disajikan dengan *header* di atas yang berisikan referensi Jam UTC terukur.
+2. Form **Economic Calendar**: Tentukan opsi (cth: Currency `IDR`) lalu tekan `Refresh Calendar` untuk mengunduh event. Tabel bisa Anda klik untuk menampilkan raw JSON.
+3. Form **Prices**: Tentukan `IHSG`, Interpal `1wk`, dan klik `Refresh Prices` untuk mengisi kanvas grafik.
+4. Form **Market Overview**: Ganti mode target negara `Indonesia`. Klik `Fetch All`. Biarkan skrip mengakuisisi profil quote puluhan nama aset populer saat itu. Aktifkan *checkbox* "Auto-Refresh quotes" untuk simulasi detak pasar.
 
 ---
 
 ## Troubleshooting Tambahan
-- Jika GUI **batal/gagal muncul**, kemungkinan besar engine library Tk/Tcl tidak dikenali sistem, segera pertimbangkan untuk melakukan penambahan pada level package manajer OS (`python3-tk` di Ubuntu/Debian).
-- Apabila terjadi kelumpuhan pada pengambilan saham (`yfinance error`), dianjurkan memperbarui input parameter `interval`/`period` lalu dicoba kembali beberapa detik kemudian. (Yahoo Finance membatasi secara dinamis rate *request*-nya).
-- Masalah penarikan data dari Investing.com yang gagal serentak (Error HTTP 429 - *Too Many Requests*) bisa disiasati dengan mengurangi beban klik ganda secara cepat pada form refresh di UI.
+- **Blank Window / PyQt5 Error pada Linux (Wayland/X11)**: Jika antarmuka gagal *render* akibat limitasi sesi Wayland pada distromu, operasikan via xcb plugin dengan format inisiasi `QT_QPA_PLATFORM=xcb python main.py`.
+- **Yahoo Rate Limit (429 HTTP Code)**: Jika tab _Market Overview_ terlalu membebani ping-pong server pada *auto-refresh*, maka indikator status di pojok UI akan melapor status "Exponential Cooldown". Anda dapat memasukkan baris Proxy aktif (*HTTP Proxy*) pada menu `Proxies...` untuk membantu memperpanjang rentang napas laju jaringan.
+- **WebSocket Finnhub Tak Muncul (Error/Closed)**: Status bar bertuliskan **WSS: Error** menandakan Anda perlu verifikasi koneksi internet berkesinambungan atau meluruskan API otentikasi kunci Finnhub pada Input terkait. Pastikan kuncinya *valid*.
