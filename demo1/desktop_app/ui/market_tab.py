@@ -2,133 +2,50 @@ import json
 import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Any
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
-    QCheckBox, QPushButton, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QTextEdit, QMessageBox,
-    QFileDialog, QSplitter, QDialog, QDialogButtonBox, QLineEdit
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QCheckBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QHeaderView, QTextEdit, QMessageBox, QFileDialog, QSplitter
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
 import pyqtgraph as pg
 
-from scrape.scrapers.country_market_scraper import CountryMarketScraper, get_country_display_list, parse_country_code, format_price
-from scrape.scrapers.finnhub_websocket import FinnhubWebsocketClient
-from desktop_app.ui.utils import _utc_now_rfc3339, _pretty_json, _format_dt_str
-from desktop_app.ui.prices_tab import TimeAxisItem
-
-# Interval and period options
-_AUTO_REFRESH_OPTIONS = [
-    ("30 s", 30_000),
-    ("1 min", 60_000),
-    ("2 min", 120_000),
-    ("5 min", 300_000),
-]
-_INTERVAL_OPTIONS = ["1m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
-_PERIOD_OPTIONS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
-
-class ProxySettingsDialog(QDialog):
-    def __init__(self, current_proxies: List[str], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Proxy Settings")
-        self.resize(400, 300)
-        
-        layout = QVBoxLayout(self)
-        
-        layout.addWidget(QLabel("Enter proxies (one per line):"))
-        layout.addWidget(QLabel("Format: http://ip:port or http://user:pass@ip:port\n(Used to prevent Yahoo Finance rate limits)"))
-        
-        self.text_edit = QTextEdit()
-        self.text_edit.setPlainText("\n".join(current_proxies))
-        layout.addWidget(self.text_edit)
-        
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
-        
-    def get_proxies(self) -> List[str]:
-        raw = self.text_edit.toPlainText().splitlines()
-        return [p.strip() for p in raw if p.strip()]
-
-class FullFetchWorker(QThread):
-    finished = pyqtSignal(str, dict, str, list, str, str) # code, quotes_dict, hist_label, history_dicts, interval, period
-    error = pyqtSignal(str)
-
-    def __init__(self, scraper, code, instruments, hist_label, interval, period):
-        super().__init__()
-        self.scraper = scraper
-        self.code = code
-        self.instruments = instruments
-        self.hist_label = hist_label
-        self.interval = interval
-        self.period = period
-
-    def run(self):
-        try:
-            # 1) Fetch quotes
-            quotes_raw = self.scraper.fetch_all_quotes(self.code)
-            
-            # 2) Fetch history for selected label
-            history_bars = []
-            if self.hist_label:
-                sym = next((s for l, s, _ in self.instruments if l == self.hist_label), None)
-                if sym:
-                    history_bars = self.scraper.fetch_history(
-                        symbol=sym,
-                        ticker_label=self.hist_label,
-                        interval=self.interval,
-                        period=self.period
-                    )
-            
-            # Serialize
-            quotes_dict = {}
-            for lbl, q in quotes_raw.items():
-                if q:
-                    quotes_dict[lbl] = {
-                        "ticker": q.ticker, "symbol": q.symbol, "fetched_at_utc": q.fetched_at_utc,
-                        "currency": q.currency, "exchange": q.exchange, "quote_type": q.quote_type,
-                        "last_price": q.last_price, "previous_close": q.previous_close,
-                        "open": q.open, "day_high": q.day_high, "day_low": q.day_low,
-                        "change": q.change, "change_percent": q.change_percent, "market_time_utc": q.market_time_utc
-                    }
-                else:
-                    quotes_dict[lbl] = None
-                    
-            history_dicts = [asdict(b) for b in history_bars]
-            
-            self.finished.emit(self.code, quotes_dict, self.hist_label, history_dicts, self.interval, self.period)
-        except Exception as e:
-            self.error.emit(str(e))
+from scrape.scrapers.country_market_scraper import (
+    CountryMarketScraper,
+    COUNTRY_TEMPLATES,
+    get_country_display_list,
+    parse_country_code,
+)
+from desktop_app.ui.utils import utc_now_rfc3339, pretty_json, format_datetime, format_price
 
 
-class QuotesOnlyWorker(QThread):
+INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d", "5d", "1wk", "1mo"]
+PERIODS = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"]
+AUTO_REFRESH_OPTIONS = [("30s", 30000), ("1m", 60000), ("2m", 120000), ("5m", 300000)]
+
+
+class QuotesWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, scraper, code):
+    def __init__(self, scraper: CountryMarketScraper, country_code: str):
         super().__init__()
         self.scraper = scraper
-        self.code = code
+        self.country_code = country_code
 
     def run(self):
         try:
-            quotes_raw = self.scraper.fetch_all_quotes(self.code)
-            quotes_dict = {}
-            for lbl, q in quotes_raw.items():
+            quotes = self.scraper.fetch_all_quotes(self.country_code)
+            result = {}
+            for label, q in quotes.items():
                 if q:
-                    quotes_dict[lbl] = {
-                        "ticker": q.ticker, "symbol": q.symbol, "fetched_at_utc": q.fetched_at_utc,
-                        "currency": q.currency, "exchange": q.exchange, "quote_type": q.quote_type,
-                        "last_price": q.last_price, "previous_close": q.previous_close,
-                        "open": q.open, "day_high": q.day_high, "day_low": q.day_low,
-                        "change": q.change, "change_percent": q.change_percent, "market_time_utc": q.market_time_utc
-                    }
+                    result[label] = asdict(q)
                 else:
-                    quotes_dict[lbl] = None
-            self.finished.emit(quotes_dict)
+                    result[label] = None
+            self.finished.emit(result)
         except Exception as e:
             if "429" in str(e) or "Too Many Requests" in str(e):
                 self.error.emit("RATE_LIMIT")
@@ -137,594 +54,376 @@ class QuotesOnlyWorker(QThread):
 
 
 class HistoryWorker(QThread):
-    finished = pyqtSignal(str, str, list, str, str) # label, sym, dicts, interval, period
-    
-    def __init__(self, scraper, label, sym, interval, period):
+    finished = pyqtSignal(str, list)
+    error = pyqtSignal(str)
+
+    def __init__(self, scraper: CountryMarketScraper, label: str, symbol: str, interval: str, period: str):
         super().__init__()
         self.scraper = scraper
         self.label = label
-        self.sym = sym
+        self.symbol = symbol
         self.interval = interval
         self.period = period
-        
+
     def run(self):
-        bars = self.scraper.fetch_history(self.sym, self.label, self.interval, self.period)
-        dicts = [asdict(b) for b in bars]
-        self.finished.emit(self.label, self.sym, dicts, self.interval, self.period)
+        try:
+            bars = self.scraper.fetch_history(self.symbol, self.label, self.interval, self.period)
+            bar_dicts = [asdict(b) for b in bars] if bars else []
+            self.finished.emit(self.label, bar_dicts)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
-class MarketOverviewTab(QWidget):
+class MarketTab(QWidget):
     def __init__(self):
         super().__init__()
         self._scraper = CountryMarketScraper()
-        self._country_display = get_country_display_list()
-        
-        self._instruments = []
-        self._quotes = {}
-        self._histories = {}
-        self._selected_label = None
-        self._fetch_inflight = False
-        self._quote_only_inflight = False
-        
-        self.ws_thread = None
-        
-        self.auto_timer = QTimer(self)
-        self.auto_timer.timeout.connect(self._auto_refresh_tick)
-        self.next_refresh_ms = 0
-        
-        # Exponential backoff base for rate limits (in ms)
-        self._cooldown_ms = 120_000 
+        self._quotes: Dict[str, Any] = {}
+        self._histories: Dict[str, List[Dict]] = {}
+        self._instruments: List[tuple] = []
+        self._cooldown_ms = 120000
         self._cooldown_active = False
-        
-        self.countdown_timer = QTimer(self)
-        self.countdown_timer.timeout.connect(self._update_countdown)
-        self.countdown_timer.start(1000)
-        
         self._init_ui()
-        self._on_country_change() # Populate initial instruments
+        self._load_country("US")
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # --- Top Controls ---
-        top_frame = QWidget()
-        top_layout = QVBoxLayout(top_frame)
-        
-        # Row 1
-        r1 = QHBoxLayout()
-        r1.addWidget(QLabel("Country:"))
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        controls = QHBoxLayout()
+
+        controls.addWidget(QLabel("Country:"))
         self.country_cb = QComboBox()
-        self.country_cb.addItems(self._country_display)
+        self.country_cb.addItems(get_country_display_list())
         self.country_cb.currentTextChanged.connect(self._on_country_change)
-        r1.addWidget(self.country_cb)
-        
-        r1.addWidget(QLabel("Chart:"))
-        self.chart_inst_cb = QComboBox()
-        self.chart_inst_cb.currentTextChanged.connect(self._on_chart_inst_change)
-        r1.addWidget(self.chart_inst_cb)
-        
-        r1.addWidget(QLabel("Interval:"))
+        controls.addWidget(self.country_cb)
+
+        controls.addWidget(QLabel("Chart:"))
+        self.chart_cb = QComboBox()
+        self.chart_cb.currentTextChanged.connect(self._on_chart_change)
+        controls.addWidget(self.chart_cb)
+
+        controls.addWidget(QLabel("Interval:"))
         self.interval_cb = QComboBox()
-        self.interval_cb.addItems(_INTERVAL_OPTIONS)
+        self.interval_cb.addItems(INTERVALS)
         self.interval_cb.setCurrentText("1d")
-        r1.addWidget(self.interval_cb)
-        
-        r1.addWidget(QLabel("Period:"))
+        controls.addWidget(self.interval_cb)
+
+        controls.addWidget(QLabel("Period:"))
         self.period_cb = QComboBox()
-        self.period_cb.addItems(_PERIOD_OPTIONS)
+        self.period_cb.addItems(PERIODS)
         self.period_cb.setCurrentText("3mo")
-        r1.addWidget(self.period_cb)
-        
-        r1.addStretch()
-        
-        self.proxy_btn = QPushButton("Proxies...")
-        self.proxy_btn.clicked.connect(self._open_proxy_dialog)
-        r1.addWidget(self.proxy_btn)
-        
-        # Real-Time Setting
-        r1.addWidget(QLabel("Finnhub WS Key:"))
-        self.finnhub_key_input = QLineEdit()
-        self.finnhub_key_input.setPlaceholderText("Paste API Key...")
-        self.finnhub_key_input.setFixedWidth(120)
-        self.finnhub_key_input.setEchoMode(QLineEdit.Password)
-        r1.addWidget(self.finnhub_key_input)
-        
-        self.ws_status = QLabel("● WSS: Off")
-        self.ws_status.setStyleSheet("color: #6c7086; font-weight: bold;")
-        r1.addWidget(self.ws_status)
-        
-        self.fetch_btn = QPushButton("Fetch All")
-        self.fetch_btn.clicked.connect(self._fetch_all_async)
-        r1.addWidget(self.fetch_btn)
-        
-        self.export_btn = QPushButton("Export JSON...")
-        self.export_btn.clicked.connect(self._export_json)
-        r1.addWidget(self.export_btn)
-        
-        top_layout.addLayout(r1)
-        
-        # Row 2 (Auto Refresh)
-        r2 = QHBoxLayout()
-        self.ar_cb = QCheckBox("Auto-Refresh quotes")
-        self.ar_cb.stateChanged.connect(self._on_auto_refresh_toggle)
-        r2.addWidget(self.ar_cb)
-        
-        r2.addWidget(QLabel("  Every:"))
-        self.ar_interval_cb = QComboBox()
-        self.ar_interval_cb.addItems([label for label, _ in _AUTO_REFRESH_OPTIONS])
-        self.ar_interval_cb.currentTextChanged.connect(self._on_ar_interval_change)
-        r2.addWidget(self.ar_interval_cb)
-        
-        r2.addWidget(QLabel("  Next:"))
+        controls.addWidget(self.period_cb)
+
+        controls.addStretch()
+
+        self.refresh_btn = QPushButton("Fetch Quotes")
+        self.refresh_btn.clicked.connect(self._fetch_quotes)
+        controls.addWidget(self.refresh_btn)
+
+        self.export_btn = QPushButton("Export JSON")
+        self.export_btn.clicked.connect(self._export)
+        controls.addWidget(self.export_btn)
+
+        layout.addLayout(controls)
+
+        auto_layout = QHBoxLayout()
+        self.auto_cb = QCheckBox("Auto-Refresh")
+        self.auto_cb.stateChanged.connect(self._on_auto_toggle)
+        auto_layout.addWidget(self.auto_cb)
+
+        auto_layout.addWidget(QLabel("Every:"))
+        self.auto_interval_cb = QComboBox()
+        self.auto_interval_cb.addItems([opt[0] for opt in AUTO_REFRESH_OPTIONS])
+        self.auto_interval_cb.currentTextChanged.connect(self._on_auto_interval_change)
+        auto_layout.addWidget(self.auto_interval_cb)
+
         self.next_lbl = QLabel("—")
-        self.next_lbl.setStyleSheet("color: #a6adc8; font-weight: bold;")
-        r2.addWidget(self.next_lbl)
-        
-        r2.addWidget(QLabel("   (Quotes only | Full fetch updates history)"))
-        r2.addStretch()
-        top_layout.addLayout(r2)
-        
-        self.status = QLabel("Select a country and click Fetch All.")
-        self.status.setStyleSheet("color: #a6adc8;")
-        top_layout.addWidget(self.status)
-        
-        layout.addWidget(top_frame)
-        
-        # --- Splitters ---
-        main_splitter = QSplitter(Qt.Vertical)
-        
-        # Top Splitter (Chart | Quotes Table)
-        top_spl = QSplitter(Qt.Horizontal)
-        
-        # Chart
-        pg.setConfigOption('background', '#1e1e2e')
-        pg.setConfigOption('foreground', '#cdd6f4')
-        self.chart = pg.PlotWidget(axisItems={'bottom': TimeAxisItem(orientation='bottom')})
-        self.chart.setLabel('left', 'Close')
+        self.next_lbl.setStyleSheet("color: #a6adc8;")
+        auto_layout.addWidget(QLabel("Next:"))
+        auto_layout.addWidget(self.next_lbl)
+
+        auto_layout.addStretch()
+        layout.addLayout(auto_layout)
+
+        self.status_lbl = QLabel("Select a country and click Fetch Quotes.")
+        self.status_lbl.setStyleSheet("color: #a6adc8; padding: 4px;")
+        layout.addWidget(self.status_lbl)
+
+        splitter = QSplitter(Qt.Vertical)
+
+        top_split = QSplitter(Qt.Horizontal)
+
+        pg.setConfigOption("background", "#1e1e2e")
+        pg.setConfigOption("foreground", "#cdd6f4")
+        self.chart = pg.PlotWidget()
+        self.chart.setLabel("left", "Close")
         self.chart.showGrid(x=True, y=True, alpha=0.3)
-        top_spl.addWidget(self.chart)
-        
-        # Quotes Table
-        self.quote_tv = QTableWidget()
-        q_cols = ["#", "Name", "Symbol", "Type", "Last", "Change", "Chg %", "Cur"]
-        self.quote_tv.setColumnCount(len(q_cols))
-        self.quote_tv.setHorizontalHeaderLabels(q_cols)
-        self.quote_tv.setSelectionBehavior(QTableWidget.SelectRows)
-        self.quote_tv.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.quote_tv.itemSelectionChanged.connect(self._on_quote_row_selected)
-        self.quote_tv.cellDoubleClicked.connect(self._on_quote_row_double_click)
-        top_spl.addWidget(self.quote_tv)
-        
-        top_spl.setSizes([600, 400])
-        main_splitter.addWidget(top_spl)
-        
-        # Middle: History Table
+        top_split.addWidget(self.chart)
+
+        self.table = QTableWidget()
+        cols = ["Name", "Symbol", "Last", "Change", "Chg %", "Currency"]
+        self.table.setColumnCount(len(cols))
+        self.table.setHorizontalHeaderLabels(cols)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.itemSelectionChanged.connect(self._on_row_select)
+        self.table.cellDoubleClicked.connect(self._on_row_double_click)
+        top_split.addWidget(self.table)
+        top_split.setSizes([600, 400])
+        splitter.addWidget(top_split)
+
         self.hist_tv = QTableWidget()
-        h_cols = ["Datetime (UTC)", "Open", "High", "Low", "Close", "Volume"]
+        h_cols = ["Datetime", "Open", "High", "Low", "Close", "Volume"]
         self.hist_tv.setColumnCount(len(h_cols))
         self.hist_tv.setHorizontalHeaderLabels(h_cols)
-        self.hist_tv.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.hist_tv.setSelectionBehavior(QTableWidget.SelectRows)
+        self.hist_tv.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.hist_tv.setEditTriggers(QTableWidget.NoEditTriggers)
-        main_splitter.addWidget(self.hist_tv)
-        
-        # Bottom: JSON View
+        splitter.addWidget(self.hist_tv)
+
         json_container = QWidget()
         json_layout = QVBoxLayout(json_container)
-        json_layout.setContentsMargins(0, 0, 0, 0)
-        
-        j_hdr = QHBoxLayout()
-        j_hdr.addWidget(QLabel("Quote JSON (selected):"))
-        self.show_json_cb = QCheckBox("Show")
-        self.show_json_cb.setChecked(True)
-        self.show_json_cb.stateChanged.connect(self._toggle_json)
-        j_hdr.addWidget(self.show_json_cb)
-        j_hdr.addStretch()
-        json_layout.addLayout(j_hdr)
-        
+        json_layout.setContentsMargins(0, 4, 0, 0)
+        json_layout.addWidget(QLabel("Quote JSON:"))
         self.json_text = QTextEdit()
         self.json_text.setReadOnly(True)
-        self.json_text.setStyleSheet("font-family: Consolas, monospace; background-color: #1e1e2e;")
+        self.json_text.setStyleSheet("font-family: Consolas, monospace; background-color: #1e1e2e; color: #cdd6f4;")
         json_layout.addWidget(self.json_text)
-        
-        main_splitter.addWidget(json_container)
-        
-        main_splitter.setSizes([400, 200, 150])
-        layout.addWidget(main_splitter)
+        splitter.addWidget(json_container)
+        splitter.setSizes([400, 200, 150])
 
-    # -----------------------------------------------
-    # UI Interactions
-    # -----------------------------------------------
-    def _open_proxy_dialog(self):
-        # The underlying CountryMarketScraper has a .proxies list, though it may not be public. We can access it directly.
-        current = getattr(self._scraper, "proxies", [])
-        dlg = ProxySettingsDialog(current, self)
-        if dlg.exec_():
-            new_proxies = dlg.get_proxies()
-            self._scraper.proxies = new_proxies
-            self.status.setText(f"Loaded {len(new_proxies)} proxies.")
+        layout.addWidget(splitter)
 
-    def _toggle_json(self):
-        self.json_text.setVisible(self.show_json_cb.isChecked())
+        self.auto_timer = QTimer(self)
+        self.auto_timer.timeout.connect(self._auto_refresh)
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.timeout.connect(self._update_countdown)
+        self.countdown_timer.start(1000)
+        self._next_refresh_ms = 0
 
-    def _on_country_change(self):
-        code = parse_country_code(self.country_cb.currentText())
-        instruments = self._scraper.get_instruments(code)
-        self._instruments = instruments
-        
-        # Stop existing websocket
-        if self.ws_thread and self.ws_thread.isRunning():
-            self.ws_thread.stop()
-            self.ws_thread.wait()
-            self.ws_status.setText("● WSS: Off")
-            self.ws_status.setStyleSheet("color: #6c7086; font-weight: bold;")
-            
-        # If US, attempt to connect to Finnhub for real-time
-        if code == "US" and self.finnhub_key_input.text().strip():
-            api_key = self.finnhub_key_input.text().strip()
-            # Finnhub requires plain symbols: AAPL, MSFT, etc.
-            # Convert Yahoo index ^GSPC to something Finnhub likes, or filter it out. 
-            # We'll filter out the index for the free tier and just stream the stocks.
-            stocks = [sym for lbl, sym, itype in instruments if itype == "stock"]
-            
-            self.ws_thread = FinnhubWebsocketClient(api_key, stocks)
-            self.ws_thread.trade_received.connect(self._on_ws_trade)
-            self.ws_thread.status_changed.connect(self._on_ws_status)
-            self.ws_thread.start()
-        
-        self.chart_inst_cb.clear()
-        labels = [lbl for lbl, _, _ in instruments]
-        if labels:
-            self.chart_inst_cb.addItems(labels)
-            self.chart_inst_cb.setCurrentIndex(0)
-            self._selected_label = labels[0]
-            
-        self.quote_tv.setRowCount(0)
-        self.hist_tv.setRowCount(0)
-        self.chart.clear()
-        self.json_text.clear()
+    def _load_country(self, code: str):
+        self._instruments = self._scraper.get_instruments(code)
         self._quotes = {}
         self._histories = {}
-        
-        self.quote_tv.setRowCount(len(instruments))
-        for i, (label, symbol, itype) in enumerate(instruments):
-            prefix = "★" if itype == "index" else ""
-            self.quote_tv.setItem(i, 0, QTableWidgetItem(prefix))
-            self.quote_tv.setItem(i, 1, QTableWidgetItem(label))
-            self.quote_tv.setItem(i, 2, QTableWidgetItem(symbol))
-            self.quote_tv.setItem(i, 3, QTableWidgetItem(itype[:3].upper()))
-            for col in range(4, 8):
-                self.quote_tv.setItem(i, col, QTableWidgetItem("..."))
 
-    def _on_chart_inst_change(self, label):
-        if not label: return
-        self._selected_label = label
-        if label in self._histories:
-            self._update_chart_and_hist_table(label)
+        self.chart_cb.clear()
+        labels = [lbl for lbl, _, _ in self._instruments]
+        if labels:
+            self.chart_cb.addItems(labels)
+            self.chart_cb.setCurrentIndex(0)
+
+        self.table.setRowCount(len(self._instruments))
+        for i, (label, symbol, itype) in enumerate(self._instruments):
+            self.table.setItem(i, 0, QTableWidgetItem(label))
+            self.table.setItem(i, 1, QTableWidgetItem(symbol))
+            for col in range(2, 6):
+                self.table.setItem(i, col, QTableWidgetItem("..."))
+
+        self.chart.clear()
+        self.hist_tv.setRowCount(0)
+        self.json_text.clear()
+
+    def _on_country_change(self, display: str):
+        code = parse_country_code(display)
+        self._load_country(code)
+        if self.auto_cb.isChecked():
+            self._schedule_auto()
+
+    def _on_chart_change(self, label: str):
+        if not label:
+            return
+        if label in self._histories and self._histories[label]:
+            self._update_chart(label, self._histories[label])
         else:
-            self._fetch_history_async(label)
+            self._fetch_history(label)
 
-    def _on_quote_row_selected(self):
-        sel = self.quote_tv.selectedItems()
-        if not sel: return
+    def _on_row_select(self):
+        sel = self.table.selectedItems()
+        if not sel:
+            return
         row = sel[0].row()
-        label = self._instruments[row][0]
-        q = self._quotes.get(label)
-        if q:
-            self.json_text.setPlainText(_pretty_json(q))
+        if row < len(self._instruments):
+            label = self._instruments[row][0]
+            q = self._quotes.get(label)
+            if q:
+                self.json_text.setPlainText(pretty_json(q))
 
-    def _on_quote_row_double_click(self, row, col):
-        label = self._instruments[row][0]
-        self.chart_inst_cb.setCurrentText(label)
+    def _on_row_double_click(self, row: int, _col: int):
+        if row < len(self._instruments):
+            label = self._instruments[row][0]
+            self.chart_cb.setCurrentText(label)
 
-    # -----------------------------------------------
-    # Auto Refresh Logic
-    # -----------------------------------------------
-    def _get_ar_ms(self):
-        label = self.ar_interval_cb.currentText()
-        for l, ms in _AUTO_REFRESH_OPTIONS:
-            if l == label: return ms
-        return 60_000
-
-    def _on_auto_refresh_toggle(self):
-        if self.ar_cb.isChecked():
-            self._schedule_next()
-        else:
-            self.auto_timer.stop()
-            self.next_refresh_ms = 0
-            self.next_lbl.setText("—")
-
-    def _on_ar_interval_change(self):
-        if self.ar_cb.isChecked():
-            self._schedule_next()
-
-    def _schedule_next(self):
-        ms = self._get_ar_ms()
-        self.auto_timer.start(ms)
-        self.next_refresh_ms = ms
-
-    def _update_countdown(self):
-        if self.ar_cb.isChecked() and self.next_refresh_ms > 0:
-            self.next_refresh_ms -= 1000
-            if self.next_refresh_ms <= 0:
-                if self._cooldown_active:
-                    self._cooldown_active = False # Cooldown over
-                    self.status.setText(f"Cooldown over. Resuming backoff={self._cooldown_ms//1000}s.")
-                    self._schedule_next()
-                else: 
-                    self.next_lbl.setText("Fetching...")
-            else:
-                s = self.next_refresh_ms // 1000
-                m = s // 60
-                s = s % 60
-                prefix = "COOLDOWN " if self._cooldown_active else ""
-                self.next_lbl.setText(f"{prefix}{m:02d}:{s:02d}")
-
-    def _auto_refresh_tick(self):
-        if not self.ar_cb.isChecked() or not self._instruments:
-            return
-        if self._cooldown_active:
-            # Let the countdown timer naturally exhaust the cooldown
-            return
-            
-        if self._quote_only_inflight or self._fetch_inflight:
-            self._schedule_next()
-            return
-            
-        self._quote_only_inflight = True
+    def _fetch_quotes(self):
         code = parse_country_code(self.country_cb.currentText())
-        self.status.setText(f"Auto-refreshing quotes for {code}...")
-        
-        self.qr_worker = QuotesOnlyWorker(self._scraper, code)
-        self.qr_worker.finished.connect(self._apply_quotes_update)
-        self.qr_worker.error.connect(self._handle_qr_error)
-        self.qr_worker.finished.connect(self._reset_qr_inflight)
-        self.qr_worker.error.connect(self._reset_qr_inflight)
-        self.qr_worker.start()
+        self.refresh_btn.setEnabled(False)
+        self.status_lbl.setText(f"Fetching quotes for {code}...")
 
-    def _handle_qr_error(self, e):
-        if e == "RATE_LIMIT":
-            mins = self._cooldown_ms // 60_000
-            self.status.setText(f"Yahoo Rate Limit (429)! Exponential Cooldown: {mins} mins...")
+        self._worker = QuotesWorker(self._scraper, code)
+        self._worker.finished.connect(self._on_quotes_done)
+        self._worker.error.connect(self._on_quotes_error)
+        self._worker.start()
+
+    def _fetch_history(self, label: str):
+        sym = next((s for lbl, s, _ in self._instruments if lbl == label), None)
+        if not sym:
+            return
+        interval = self.interval_cb.currentText()
+        period = self.period_cb.currentText()
+        self.status_lbl.setText(f"Fetching {label} history...")
+
+        self._hist_worker = HistoryWorker(self._scraper, label, sym, interval, period)
+        self._hist_worker.finished.connect(self._on_history_done)
+        self._hist_worker.error.connect(self._on_history_error)
+        self._hist_worker.start()
+
+    def _on_quotes_done(self, quotes: Dict):
+        self.refresh_btn.setEnabled(True)
+        self._quotes = quotes
+        self._update_table(quotes)
+
+        ok_count = sum(1 for v in quotes.values() if v)
+        self.status_lbl.setText(f"Loaded {ok_count}/{len(quotes)} quotes")
+
+    def _on_quotes_error(self, err: str):
+        self.refresh_btn.setEnabled(True)
+        if err == "RATE_LIMIT":
+            mins = self._cooldown_ms // 60000
+            self.status_lbl.setText(f"Rate limited! Cooldown: {mins}m")
             self._cooldown_active = True
             self.auto_timer.stop()
-            self.next_refresh_ms = self._cooldown_ms
-            # Double backoff for next time, max 16 mins
-            self._cooldown_ms = min(self._cooldown_ms * 2, 960_000) 
+            self._next_refresh_ms = self._cooldown_ms
         else:
-            self.status.setText(f"Auto-refresh error: {e}")
+            self.status_lbl.setText(f"Error: {err}")
+            QMessageBox.critical(self, "Error", err)
 
-    def _reset_qr_inflight(self, *args):
-        self._quote_only_inflight = False
-        if not self._cooldown_active:
-            self._schedule_next()
-        else:
-            # Once cooldown countdown reaches 0 in _update_countdown, 
-            # it clears _cooldown_active and calls _schedule_next()
-            pass
+    def _on_history_done(self, label: str, bars: List[Dict]):
+        self._histories[label] = bars
+        self._update_chart(label, bars)
+        self.status_lbl.setText(f"{label}: {len(bars)} bars")
 
-    # -----------------------------------------------
-    # Data Fetching
-    # -----------------------------------------------
-    def _fetch_all_async(self):
-        if self._fetch_inflight: return
-        code = parse_country_code(self.country_cb.currentText())
-        if not code or not self._instruments: return
-        
-        self._fetch_inflight = True
-        self.fetch_btn.setEnabled(False)
-        self.status.setText(f"Fetching all quotes for {code}...")
-        
-        interval = self.interval_cb.currentText()
-        period = self.period_cb.currentText()
-        sel_label = self._selected_label
-        
-        self.fw_worker = FullFetchWorker(self._scraper, code, self._instruments, sel_label, interval, period)
-        self.fw_worker.finished.connect(self._apply_full_fetch)
-        self.fw_worker.error.connect(self._on_fetch_error)
-        self.fw_worker.start()
-        
-    def _fetch_history_async(self, label):
-        sym = next((s for l, s, _ in self._instruments if l == label), None)
-        if not sym: return
-        
-        self.status.setText(f"Fetching history for {label}...")
-        interval = self.interval_cb.currentText()
-        period = self.period_cb.currentText()
-        
-        self.h_worker = HistoryWorker(self._scraper, label, sym, interval, period)
-        self.h_worker.finished.connect(self._apply_history_update)
-        self.h_worker.start()
+    def _on_history_error(self, err: str):
+        self.status_lbl.setText(f"History error: {err}")
 
-    def _on_fetch_error(self, err):
-        self._fetch_inflight = False
-        self.fetch_btn.setEnabled(True)
-        self.status.setText("Error.")
-        QMessageBox.critical(self, "Fetch Error", err)
-
-    # -----------------------------------------------
-    # Applying Data to UI
-    # -----------------------------------------------
-    def _apply_full_fetch(self, code, quotes_dict, hist_label, history_dicts, interval, period):
-        self._fetch_inflight = False
-        self.fetch_btn.setEnabled(True)
-        # Reset cooldown on successful full fetch
-        self._cooldown_ms = 120_000 
-        self._quotes = quotes_dict
-        if hist_label:
-            self._histories[hist_label] = history_dicts
-            
-        self._update_quote_table(quotes_dict)
-        
-        if hist_label and history_dicts:
-            self._update_chart_and_hist_table(hist_label)
-            
-        n_ok = sum(1 for v in quotes_dict.values() if v)
-        self.status.setText(f"{code}: {n_ok}/{len(quotes_dict)} quotes loaded. History for {hist_label}: {len(history_dicts)} bars.")
-
-    def _apply_quotes_update(self, quotes_dict):
-        self._quotes = quotes_dict
-        self._update_quote_table(quotes_dict)
-        n_ok = sum(1 for v in quotes_dict.values() if v)
-        self.status.setText(f"Quotes refreshed: {n_ok}/{len(quotes_dict)} ok. Last: {_utc_now_rfc3339()}")
-
-    def _apply_history_update(self, label, symbol, dicts, interval, period):
-        self._histories[label] = dicts
-        if dicts:
-            self._update_chart_and_hist_table(label)
-            self.status.setText(f"History for {label} ({symbol}): {len(dicts)} bars.")
-        else:
-            self.status.setText(f"History empty for {label}.")
-
-    def _update_quote_table(self, quotes_dict):
+    def _update_table(self, quotes: Dict):
         for i, (label, symbol, itype) in enumerate(self._instruments):
-            q = quotes_dict.get(label)
-            if not q: continue
-            
-            last_p = q.get("last_price")
+            q = quotes.get(label)
+            if not q:
+                for col in range(2, 6):
+                    self.table.setItem(i, col, QTableWidgetItem("—"))
+                continue
+
+            last = q.get("last_price")
             chg = q.get("change")
             chg_pct = q.get("change_percent")
-            cur = q.get("currency") or ""
-            
-            last_s = format_price(last_p)
-            chg_s = f"{chg:+.4g}" if chg is not None else "—"
-            chg_pct_s = f"{chg_pct:+.2f}%" if chg_pct is not None else "—"
-            
-            for col, text in enumerate(["", label, symbol, itype[:3].upper(), last_s, chg_s, chg_pct_s, cur]):
-                if col == 0:
-                    text = "★" if itype == "index" else ""
-                item = QTableWidgetItem(text)
-                
-                # Colors
-                if col in [4, 5, 6]: # Prices/Change
-                    if chg is not None and chg > 0: item.setForeground(QColor("#a6e3a1")) # Green
-                    elif chg is not None and chg < 0: item.setForeground(QColor("#f38ba8")) # Red
-                if itype == "index":
-                    item.setForeground(QColor("#cba6f7")) # Mauve for index
-                
-                self.quote_tv.setItem(i, col, item)
+            cur = q.get("currency", "")
 
-    def _update_chart_and_hist_table(self, label):
-        bars = self._histories.get(label) or []
-        
+            last_s = format_price(last)
+            chg_s = f"{chg:+.4g}" if chg is not None else "—"
+            pct_s = f"{chg_pct:+.2f}%" if chg_pct is not None else "—"
+
+            for col, text in [(2, last_s), (3, chg_s), (4, pct_s), (5, cur or "")]:
+                item = QTableWidgetItem(text)
+                if col in (2, 3, 4) and chg is not None:
+                    if chg > 0:
+                        item.setForeground(QColor("#a6e3a1"))
+                    elif chg < 0:
+                        item.setForeground(QColor("#f38ba8"))
+                self.table.setItem(i, col, item)
+
+    def _update_chart(self, label: str, bars: List[Dict]):
         show = bars[-300:] if len(bars) > 300 else bars
         self.hist_tv.setRowCount(len(show))
-        
+
         x_data, y_data = [], []
         for i, r in enumerate(show):
-            dt_s = r.get("datetime_utc", "")
-            self.hist_tv.setItem(i, 0, QTableWidgetItem(_format_dt_str(dt_s)))
-            self.hist_tv.setItem(i, 1, QTableWidgetItem(str(r.get("open", ""))))
-            self.hist_tv.setItem(i, 2, QTableWidgetItem(str(r.get("high", ""))))
-            self.hist_tv.setItem(i, 3, QTableWidgetItem(str(r.get("low", ""))))
-            self.hist_tv.setItem(i, 4, QTableWidgetItem(str(r.get("close", ""))))
-            self.hist_tv.setItem(i, 5, QTableWidgetItem(str(r.get("volume", ""))))
-            
-            if dt_s and r.get("close") is not None:
+            dt = str(r.get("datetime_utc", ""))
+            self.hist_tv.setItem(i, 0, QTableWidgetItem(format_datetime(dt)))
+            self.hist_tv.setItem(i, 1, QTableWidgetItem(str(r.get("open", "") or "")))
+            self.hist_tv.setItem(i, 2, QTableWidgetItem(str(r.get("high", "") or "")))
+            self.hist_tv.setItem(i, 3, QTableWidgetItem(str(r.get("low", "") or "")))
+            self.hist_tv.setItem(i, 4, QTableWidgetItem(str(r.get("close", "") or "")))
+            self.hist_tv.setItem(i, 5, QTableWidgetItem(str(r.get("volume", "") or "")))
+
+            if dt and r.get("close") is not None:
                 try:
-                    if dt_s.endswith("Z"):
-                        dt_s = dt_s[:-1] + "+00:00"
-                    
-                    dt = datetime.fromisoformat(dt_s)
-                    if not dt.tzinfo:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                        
-                    x_data.append(dt.timestamp())
+                    dt_s = dt.replace("Z", "+00:00")
+                    dt_obj = datetime.fromisoformat(dt_s)
+                    if dt_obj.tzinfo is None:
+                        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                    x_data.append(dt_obj.timestamp())
                     y_data.append(float(r.get("close")))
-                except: pass
-                
+                except Exception:
+                    pass
+
         self.chart.clear()
         if x_data and y_data:
-            itype = next((t for l, _, t in self._instruments if l == label), "stock")
-            sym = next((s for l, s, _ in self._instruments if l == label), label)
-            
-            self.chart.plot(x_data, y_data, pen=pg.mkPen('#89b4fa', width=2))
-            self.chart.setTitle(f"{label} ({'Index' if itype == 'index' else 'Stock'}) - {sym}")
-            
-            scatter = pg.ScatterPlotItem(x=[x_data[-1]], y=[y_data[-1]], size=10, brush=pg.mkBrush('#f9e2af'))
-            self.chart.addItem(scatter)
+            self.chart.plot(x_data, y_data, pen=pg.mkPen("#89b4fa", width=2))
+            self.chart.setTitle(f"{label} Price History")
 
-    def _export_json(self):
+            last_dot = pg.ScatterPlotItem(
+                x=[x_data[-1]], y=[y_data[-1]],
+                size=10, brush=pg.mkBrush("#f9e2af")
+            )
+            self.chart.addItem(last_dot)
+
+    def _on_auto_toggle(self, state: int):
+        if state == Qt.Checked:
+            self._schedule_auto()
+        else:
+            self.auto_timer.stop()
+            self._next_refresh_ms = 0
+            self.next_lbl.setText("—")
+
+    def _on_auto_interval_change(self, text: str):
+        if self.auto_cb.isChecked():
+            self._schedule_auto()
+
+    def _schedule_auto(self):
+        for label, ms in AUTO_REFRESH_OPTIONS:
+            if label == self.auto_interval_cb.currentText():
+                self._next_refresh_ms = ms
+                self.auto_timer.start(ms)
+                return
+
+    def _update_countdown(self):
+        if not self.auto_cb.isChecked() or self._next_refresh_ms <= 0:
+            return
+        self._next_refresh_ms -= 1000
+        if self._next_refresh_ms <= 0:
+            if self._cooldown_active:
+                self._cooldown_active = False
+                self._schedule_auto()
+                self.status_lbl.setText("Cooldown over. Resuming auto-refresh.")
+            else:
+                self.next_lbl.setText("Fetching...")
+        else:
+            s = self._next_refresh_ms // 1000
+            prefix = "COOLDOWN " if self._cooldown_active else ""
+            self.next_lbl.setText(f"{prefix}{s}s")
+
+    def _auto_refresh(self):
+        if self._cooldown_active:
+            return
+        self._fetch_quotes()
+
+    def _export(self):
         if not self._quotes:
             QMessageBox.information(self, "Export", "No data loaded.")
             return
         code = parse_country_code(self.country_cb.currentText())
         payload = {
-            "exported_at_utc": _utc_now_rfc3339(),
+            "exported_at_utc": utc_now_rfc3339(),
             "country_code": code,
             "quotes": self._quotes,
-            "histories": self._histories
+            "histories": self._histories,
         }
-        
-        path, _ = QFileDialog.getSaveFileName(self, "Export market snapshot", f"{code}_market_snapshot.json", "JSON (*.json)")
-        if not path: return
+        path, _ = QFileDialog.getSaveFileName(self, "Export Market Data", f"{code}_market.json", "JSON (*.json)")
+        if not path:
+            return
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "Export", f"Saved:\n{path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export failed", str(e))
-
-    # -----------------------------------------------
-    # WebSocket Real-Time Handling
-    # -----------------------------------------------
-    def _on_ws_status(self, msg):
-        if "Connected" in msg:
-            self.ws_status.setText("● WSS: Live")
-            self.ws_status.setStyleSheet("color: #a6e3a1; font-weight: bold;") # Green
-        elif "Error" in msg or "Closed" in msg:
-            self.ws_status.setText("● WSS: Error/Closed")
-            self.ws_status.setStyleSheet("color: #f38ba8; font-weight: bold;") # Red
-
-    def _on_ws_trade(self, trade):
-        # Format: {"symbol": "AAPL", "p": 150.25, "v": 100, "t": 1600000000}
-        sym = trade.get("symbol")
-        price = trade.get("p")
-        if not sym or price is None: return
-        
-        # 1. Update Table Row
-        lbl = None
-        for i, (label, symbol, itype) in enumerate(self._instruments):
-            # Finnhub drops suffix for US, Yahoo uses plain AAPL anyway, so direct match usually works
-            if symbol == sym:
-                lbl = label
-                
-                # Fetch existing quote to calculate real-time change
-                q = self._quotes.get(label)
-                if q and q.get("previous_close"):
-                    prev = q["previous_close"]
-                    chg = price - prev
-                    chg_pct = (chg / prev) * 100.0
-                    
-                    item_last = QTableWidgetItem(format_price(price))
-                    item_last.setForeground(QColor("#f9e2af")) # Yellow flash for updates
-                    self.quote_tv.setItem(i, 4, item_last)
-                    
-                    item_chg = QTableWidgetItem(f"{chg:+.4g}")
-                    item_chgp = QTableWidgetItem(f"{chg_pct:+.2f}%")
-                    
-                    for idx, x in enumerate([item_chg, item_chgp]):
-                        if chg > 0: x.setForeground(QColor("#a6e3a1"))
-                        elif chg < 0: x.setForeground(QColor("#f38ba8"))
-                        self.quote_tv.setItem(i, 5 + idx, x)
-                        
-                    # Inject back into dict for JSON export accuracy
-                    q["last_price"] = price
-                    q["change"] = chg
-                    q["change_percent"] = chg_pct
-                    self._quotes[label] = q
-                    break
-                    
-        # 2. Update existing chart if it's currently selected
-        if lbl and self._selected_label == lbl and self.chart:
-            # Append to last bar in pyqtgraph without redrawing everything
-            bars = self._histories.get(lbl)
-            if bars:
-                last_bar = bars[-1]
-                # Update close price natively
-                last_bar["close"] = price
-                if price > last_bar["high"]: last_bar["high"] = price
-                if price < last_bar["low"]: last_bar["low"] = price
-                # Re-render chart fast
-                self._update_chart_and_hist_table(lbl)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))

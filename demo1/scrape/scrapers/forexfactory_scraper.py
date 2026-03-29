@@ -52,21 +52,9 @@ from utils.helpers import (
 log = get_logger("forexfactory", config.LOG_LEVEL)
 
 
-def _silent_logger() -> "logging.Logger":
-    """Return a logger that downgrades WARNING→DEBUG for optional feeds."""
-    import logging as _logging
-
-    class _DowngradeWarnings(_logging.Logger):
-        def warning(self, msg, *args, **kwargs):  # type: ignore[override]
-            self.debug(msg, *args, **kwargs)
-
-    name = "forexfactory.silent"
-    existing = _logging.getLogger(name)
-    existing.__class__ = _DowngradeWarnings
-    existing.setLevel(_logging.DEBUG)
-    if not existing.handlers:
-        existing.addHandler(_logging.NullHandler())
-    return existing
+def _silent_logger():
+    import logging
+    return logging.getLogger("forexfactory.silent")
 
 
 # ── Constants ─────────────────────────────────────────────────

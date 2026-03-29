@@ -1,108 +1,225 @@
-# PBL Web Scraper APIs
+# PBL Economic & Market Data API v2.1.0
 
-This document outlines the background data scrapers used by the PBL Desktop Application, including how to call them, their rate limits, and what they do.
+FastAPI-based REST API for scraping economic calendar data and market prices from free sources (no API keys required).
 
 ---
 
-## 1. Yahoo Finance Price Scraper (`yfinance`)
+## Quick Start
 
-**Description**: Fetches current snapshot quotes and historical OHLCV (Open, High, Low, Close, Volume) data for stocks, currencies, and indices.
-
-**Usage**:
-```python
-from scrape.scrapers.yfinance_price_scraper import YahooFinancePriceScraper
-scraper = YahooFinancePriceScraper()
-
-# Snapshot
-quote = scraper.fetch_quote("AAPL", ticker_label="Apple")
-
-# History
-bars = scraper.fetch_history("AAPL", "Apple", interval="1d", period="3mo")
+```bash
+cd demo1
+source scrape/venv/bin/activate
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Underlying API**: Uses the unofficial `yfinance` Python library which interacts with `query2.finance.yahoo.com`.
-
-**Rate Limits & Throttle Behavior**:
-- **Strict IP Limits**: Yahoo Finance frequently rate limits (HTTP 429) requests. 
-- **Mitigation (UI)**: The `MarketOverviewTab` includes a `Proxies` button allowing you to supply rotating proxy servers. When a 429 rate limit is hit, the UI goes into an automatic 3-minute cooldown before fetching again.
-- **Mitigation (Backend)**: The `CountryMarketScraper` wrapper includes a randomized sleep (`random.uniform(0.1, 1.5)`) to introduce **jitter** between concurrent worker threads, preventing massive simultaneous request spikes.
+API runs at: http://localhost:8000
+Interactive docs: http://localhost:8000/docs
 
 ---
 
-## 2. Country Market Scraper (Wrapper)
+## Endpoints
 
-**Description**: Higher-level concurrent wrapper around Yahoo Finance to fetch pre-defined templates of international markets (1 benchmark index + Top 5 largest stocks).
+### Health Check
+```
+GET /health
+```
+Returns `{"status":"healthy"}`
 
-**Usage**:
-```python
-from scrape.scrapers.country_market_scraper import CountryMarketScraper
-scraper = CountryMarketScraper(proxies=["http://myproxy:80"])
+---
 
-# Fetches 6 concurrent quotes
-quotes_dict = scraper.fetch_all_quotes(country_code="US") 
+### Economic Calendar
 
-# Fetches 6 concurrent histories
-histories_dict = scraper.fetch_all_histories(country_code="US")
+#### Get Combined Calendar
+```
+GET /calendar/
+```
+Query parameters:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `date_from` | string | auto | Start date (YYYY-MM-DD) |
+| `date_to` | string | auto | End date (YYYY-MM-DD) |
+| `days_back` | int | 1 | Days before today (0-30) |
+| `days_ahead` | int | 7 | Days ahead (0-90) |
+| `currencies` | string | all | Comma-separated: USD,IDR |
+| `impact` | string | all | Comma-separated: High,Medium,Low |
+| `sources` | string | both | Comma-separated: forexfactory,investing |
+| `refresh` | bool | false | Bypass cache and force fresh fetch |
+
+Response includes `Cache-Control: private, max-age=120` header.
+
+Example:
+```
+GET /calendar/?currencies=USD,IDR&impact=High&days_ahead=14
 ```
 
-**Concurrency details**: Uses a `ThreadPoolExecutor` of up to 6 workers.
-
----
-
-## 3. Economic Calendar Scrapers
-
-**Description**: Scrapes financial calendar events (decisions, GDP, API inventories) from financial news portals.
-**Supported Sources**: 
-- `Investing.com` (Source key: `"inv"`)
-- `ForexFactory` (Source key: `"ff"`)
-
-**Usage**:
-```python
-from scrape.main import run_pipeline
-
-# Scrape combined calendar events
-result = run_pipeline(
-    sources=["inv", "ff"],
-    impact_filter=["High", "Medium"],
-    currency_filter=["USD", "IDR"],
-    days_back=1,
-    days_ahead=0,
-    export_fmt="json"
-)
-print(result.events)
+#### ForexFactory Only
+```
+GET /calendar/forexfactory?days_ahead=7
 ```
 
-**Rate Limits & Throttle Behavior**:
-- **Investing.com**: Employs Cloudflare browser checks. The scraper uses standard `requests` with randomized User-Agent headers natively. Since the Economic Calendar updates roughly precisely on schedules (not second-by-second), it is fetched manually in the UI rather than via a looping background timer.
-- **ForexFactory**: Very lenient rate limits for the calendar, but highly dependent on the `User-Agent`.
-
----
-
-## 4. Finnhub Real-Time WebSocket (Free Tier)
-
-**Description**: Provides true millisecond real-time streaming of US stock trades directly into the UI via the `websocket-client` library. This allows you to view live changing numbers for the `US` market without hitting Yahoo Finance limits.
-
-**Usage**:
-```python
-from scrape.scrapers.finnhub_websocket import FinnhubWebsocketClient
-
-# Create the websocket thread
-ws = FinnhubWebsocketClient(api_key="your_finnhub_key", symbols=["AAPL", "MSFT"])
-ws.trade_received.connect(lambda trade: print(trade))
-ws.start()
+#### Investing.com Only
+```
+GET /calendar/investing?currencies=USD,IDR&days_ahead=14
 ```
 
-**Underlying API**: Interacts with `wss://ws.finnhub.io?token={api_key}`.
-**Rate Limits & Throttle Behavior**:
-- **Connection Limit**: Free tier supports a few concurrent connections.
-- **Message Limit**: The free tier restricts messages to roughly 50 trades per second.
-- **Handling**: The `FinnhubWebsocketClient` receives JSON payloads and unpacks them into native Python dictionaries, which are safely passed to the GUI layer using a `pyqtSignal`. 
+---
+
+### Market Prices
+
+#### Get Quote
+```
+GET /prices/quote/{symbol}
+```
+Examples:
+- `/prices/quote/IDR=X` — USD/IDR exchange rate
+- `/prices/quote/AAPL` — Apple stock
+- `/prices/quote/BBCA.JK` — BBCA stock
+
+Query parameters: `ticker`, `proxy`, `refresh` (bypass cache)
+
+Response: `Cache-Control: private, max-age=30`
+
+#### Get Price History
+```
+GET /prices/history/{symbol}?interval=1d&period=3mo
+```
+Query parameters: `interval`, `period`, `start`, `end`, `proxy`, `refresh`
+
+Response: `Cache-Control: private, max-age=300`
+
+#### Get Market Overview
+```
+GET /prices/market/{country}
+```
+Countries: `US`, `ID`
+
+Response: `Cache-Control: private, max-age=60`
+
+#### List Default Tickers
+```
+GET /prices/default-tickers
+```
+
+#### List Supported Countries
+```
+GET /prices/supported-countries
+```
 
 ---
 
-## 5. Caching Layer
+### Cache Management
 
-**Description**: The `CountryMarketScraper` now features an internal In-Memory Time-To-Live (TTL) cache.
-- **Mechanism**: Every dictionary/object fetched is saved natively with a `time.time()` stamp.
-- **Threshold**: 15 seconds.
-- **Purpose**: If a user clicks the "Fetch All" button 10 times in 3 seconds, or the auto-refresh fires while a manual fetch is ongoing, the cache intercepts the duplicate HTTP requests and returns the stored payload instantly. This provides a fast, snappy UI while drastically cutting down on arbitrary 429 Rate Limits from API providers. 
+#### Cache Status
+```
+GET /cache/status
+```
+Returns current cache entry count and rate limit states per source.
+
+```json
+{
+  "cache_entries": 2,
+  "rate_limits": {
+    "forexfactory": {"blocked": false, "retry_after": 0, "consecutive_errors": 0},
+    "investing": {"blocked": false, "retry_after": 0, "consecutive_errors": 0},
+    "yfinance": {"blocked": false, "retry_after": 0, "consecutive_errors": 0}
+  }
+}
+```
+
+#### Clear Cache
+```
+POST /cache/clear
+```
+Clears all cached responses.
+
+#### Unblock Rate-Limited Source
+```
+POST /rate-limit/unblock/{source}
+```
+Manually unblocks a rate-limited source (forexfactory, investing, yfinance).
+
+---
+
+## Caching
+
+| Endpoint Group | TTL | Notes |
+|---------------|-----|-------|
+| Calendar | 120s | Deduplicated, multi-source merge |
+| Quotes | 30s | Per symbol |
+| Price History | 300s | Per symbol+interval+period |
+| Market Overview | 60s | Per country |
+
+Use `?refresh=true` on any endpoint to bypass cache.
+
+---
+
+## Rate Limiting & Retry
+
+| Source | Retry Mechanism |
+|--------|----------------|
+| ForexFactory | Tenacity: 3 attempts, exponential backoff 2-10s |
+| Investing.com | Tenacity: 3 attempts, 2-10s backoff + 2s between pages |
+| Yahoo Finance | 120s cooldown on 429, auto-resume |
+
+When a source is rate-limited, subsequent requests skip that source and return partial data with an `errors` field listing which sources failed.
+
+---
+
+## Data Sources
+
+| Source | Data Type | Auth Required |
+|--------|-----------|---------------|
+| ForexFactory | Economic Calendar (USD) | No |
+| Investing.com | Economic Calendar (USD, IDR) | No |
+| Yahoo Finance | Stock/FX/Crypto Prices | No |
+
+---
+
+## Response Models
+
+### EconomicCalendarResponse
+```json
+{
+  "events": [...],
+  "total_count": 129,
+  "usd_count": 122,
+  "idr_count": 7,
+  "high_impact_count": 3,
+  "sources": ["forexfactory", "investing"],
+  "fetched_at": "2026-03-29T01:52:18",
+  "date_from": "2026-03-28",
+  "date_to": "2026-04-01",
+  "errors": null
+}
+```
+
+### QuoteResponse
+```json
+{
+  "quote": {
+    "ticker": "IDR=X",
+    "symbol": "IDR=X",
+    "fetched_at_utc": "2026-03-29T01:26:04Z",
+    "currency": "IDR",
+    "last_price": 16925.0,
+    "change": 27.0,
+    "change_percent": 0.16
+  },
+  "fetched_at": "2026-03-29T01:26:06"
+}
+```
+
+---
+
+## Running the Server
+
+```bash
+cd demo1
+source scrape/venv/bin/activate
+uvicorn api.main:app --reload --port 8000
+```
+
+For production:
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
+```

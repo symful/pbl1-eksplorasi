@@ -43,7 +43,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser
 
-from scrape.scrapers.forexfactory_scraper import SOURCE_NAME
+from .forexfactory_scraper import SOURCE_NAME
 
 # Allow running this file directly (python scrapers/investing_scraper.py)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -96,41 +96,19 @@ class InvestingComScraper:
         "KR": "KRW",
     }
 
-
-# Fallback: text inside the currency cell → currency code
-_TEXT_TO_CURRENCY: dict[str, str] = {
-    "usd": "USD",
-    "idr": "IDR",
-    "eur": "EUR",
-    "gbp": "GBP",
-    "jpy": "JPY",
-    "aud": "AUD",
-    "nzd": "NZD",
-    "cad": "CAD",
-    "chf": "CHF",
-    "cny": "CNY",
-    "krw": "KRW",
-}
-
-
-# ── Scraper Class ─────────────────────────────────────────────
-
-
-class InvestingComScraper:
-    """
-    Scrapes the Investing.com economic calendar for USD and IDR events.
-
-    The scraper fetches a date window (``days_back`` .. ``days_ahead``)
-    relative to today, normalises each row into an ``EconomicEvent``,
-    and optionally filters by impact level.
-
-    Usage
-    -----
-    >>> scraper = InvestingComScraper()
-    >>> events = scraper.fetch()
-    >>> for event in events:
-    ...     print(event)
-    """
+    _TEXT_TO_CURRENCY: dict[str, str] = {
+        "usd": "USD",
+        "idr": "IDR",
+        "eur": "EUR",
+        "gbp": "GBP",
+        "jpy": "JPY",
+        "aud": "AUD",
+        "nzd": "NZD",
+        "cad": "CAD",
+        "chf": "CHF",
+        "cny": "CNY",
+        "krw": "KRW",
+    }
 
     def __init__(
         self,
@@ -608,14 +586,14 @@ class InvestingComScraper:
             if classes:
                 for cls in classes:
                     if cls != "ceFlags" and len(cls) == 2:
-                        currency = _FLAG_TO_CURRENCY.get(cls.upper(), "")
+                        currency = self._FLAG_TO_CURRENCY.get(cls.upper(), "")
                         if currency:
                             return currency
 
         # Fallback: plain text of the cell
         text = clean_value(col.get_text()).upper()
-        if text in _TEXT_TO_CURRENCY:
-            return _TEXT_TO_CURRENCY[text]
+        if text in self._TEXT_TO_CURRENCY:
+            return self._TEXT_TO_CURRENCY[text]
         if len(text) == 3 and text.isalpha():
             return text
 
