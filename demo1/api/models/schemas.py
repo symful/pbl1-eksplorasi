@@ -120,9 +120,11 @@ class MarketOverviewItem(BaseModel):
     day_high: Optional[float] = None
     day_low: Optional[float] = None
     volume: Optional[float] = None
+    error: Optional[str] = None
 
 
 class MarketOverviewResponse(BaseModel):
     country: str
     items: list[MarketOverviewItem]
     fetched_at: datetime
+    errors: Optional[list[str]] = None

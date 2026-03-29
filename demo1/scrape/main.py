@@ -306,6 +306,13 @@ def export_results(result: PipelineResult, fmt: str = config.OUTPUT_FORMAT) -> N
             save_events(inv_usd, config.OUTPUT_DIR, "investing_usd", fmt=fmt)
         if inv_idr:
             save_events(inv_idr, config.OUTPUT_DIR, "investing_idr", fmt=fmt)
+        elif "investing" in result.errors or len(inv_idr) == 0:
+            import os
+            idr_path = os.path.join(config.OUTPUT_DIR, "investing_idr.json")
+            if os.path.exists(idr_path):
+                with open(idr_path, "w", encoding="utf-8") as f:
+                    json.dump({"error": "No IDR events from Investing.com", "source": "investing", "idr_events": 0}, f, ensure_ascii=False, indent=2)
+                log.warning("Investing.com returned no IDR events, overwriting investing_idr.json with error marker")
 
     # ── Pipeline summary ──────────────────────────────────────
     summary_path = os.path.join(config.OUTPUT_DIR, "pipeline_summary.json")

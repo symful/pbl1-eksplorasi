@@ -59,7 +59,10 @@ class PricesWorker(QThread):
                 period=self.period,
             )
 
-            quote_dict = asdict(quote) if quote else {}
+            if quote and quote.last_price is not None:
+                quote_dict = asdict(quote)
+            else:
+                quote_dict = {"error": f"Failed to fetch quote for {label}", "label": label}
             bar_dicts = [asdict(b) for b in bars] if bars else []
 
             msg = f"Got {len(bar_dicts)} bars"

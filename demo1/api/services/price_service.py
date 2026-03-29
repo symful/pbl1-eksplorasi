@@ -178,6 +178,7 @@ def get_market_overview(
         if "429" in str(e) or "rate" in str(e).lower():
             tracker.block("yfinance", 120.0, str(e))
         errors.append(f"{market['index']}: {e}")
+        index_item.error = str(e)
     all_items.append(index_item)
 
     for sym in market["stocks"]:
@@ -200,12 +201,14 @@ def get_market_overview(
             if "429" in str(e) or "rate" in str(e).lower():
                 tracker.block("yfinance", 120.0, str(e))
             errors.append(f"{sym}: {e}")
+            item.error = str(e)
         all_items.append(item)
 
     resp = MarketOverviewResponse(
         country=country,
         items=all_items,
         fetched_at=datetime.now(),
+        errors=errors if errors else None,
     )
 
     try:

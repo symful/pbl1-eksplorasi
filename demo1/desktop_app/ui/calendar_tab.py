@@ -52,8 +52,11 @@ class CalendarWorker(QThread):
                     )
                     inv_events = inv.fetch()
                     for e in inv_events:
-                        if currency_filter is None or e.currency in currency_filter:
+                        e_currency = str(e.currency) if e.currency else ""
+                        if currency_filter is None or e_currency in currency_filter:
                             events.append(event_to_dict(e))
+                    if not inv_events:
+                        print(f"Investing.com: 0 events fetched (currency_filter={currency_filter})")
                 except Exception as ex:
                     print(f"Investing.com error: {ex}")
 

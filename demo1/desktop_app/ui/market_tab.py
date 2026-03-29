@@ -248,6 +248,9 @@ class MarketTab(QWidget):
             q = self._quotes.get(label)
             if q:
                 self.json_text.setPlainText(pretty_json(q))
+            else:
+                error_info = {"error": f"Failed to fetch quote for {label}", "label": label}
+                self.json_text.setPlainText(pretty_json(error_info))
 
     def _on_row_double_click(self, row: int, _col: int):
         if row < len(self._instruments):
@@ -310,7 +313,9 @@ class MarketTab(QWidget):
             q = quotes.get(label)
             if not q:
                 for col in range(2, 6):
-                    self.table.setItem(i, col, QTableWidgetItem("—"))
+                    item = QTableWidgetItem("—")
+                    item.setForeground(QColor("#f38ba8"))
+                    self.table.setItem(i, col, item)
                 continue
 
             last = q.get("last_price")
