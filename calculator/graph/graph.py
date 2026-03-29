@@ -7,23 +7,13 @@ import numpy as np
 matplotlib.use("TkAgg")
 
 
-def _resolve(theme):
-    if not theme:
-        return {
-            "fig_bg": "#1e1e2e",
-            "ax_bg": "#181825",
-            "line": "#89b4fa",
-            "zero": "#6c7086",
-            "grid": "#313244",
-            "text": "#cdd6f4",
-            "tick": "#a6adc8",
-            "spine": "#313244",
-        }
+def _resolve(theme=None):
+    theme = theme or {}
     return {
-        "fig_bg": theme.get("bg", "#1e1e2e"),
-        "ax_bg": theme.get("display_bg", "#181825"),
+        "fig_bg": theme.get("bg", "#11111b"),
+        "ax_bg": theme.get("display_bg", "#0b0f1a"),
         "line": theme.get("btn_op_bg", "#89b4fa"),
-        "zero": theme.get("btn_bg", "#6c7086"),
+        "zero": theme.get("btn_bg", "#313244"),
         "grid": theme.get("btn_bg", "#313244"),
         "text": theme.get("fg", "#cdd6f4"),
         "tick": theme.get("display_fg", "#a6adc8"),
